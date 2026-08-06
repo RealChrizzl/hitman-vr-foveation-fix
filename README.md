@@ -59,10 +59,10 @@ The `.bat` is one line. Open it in Notepad if you like; it does nothing but star
 script next to it.
 
 ### Linux 
-1. Download the two files: 'HitmanVRFoveationFix-linux.py' and 'HitmanVRFoveationFix-linux.sh'
+1. Download the two files: `HitmanVRFoveationFix-linux.py` and `HitmanVRFoveationFix-linux.sh`
    — keep them in the same folder
-3. In your terminal make the shell script executable: chmod +x HitmanVRFoveationFix-linux.sh
-4. Run the shell script: ./HitmanVRFoveationFix-linux.sh
+3. In your terminal make the shell script executable: `chmod +x HitmanVRFoveationFix-linux.sh`
+4. Run the shell script: `./HitmanVRFoveationFix-linux.sh`
 5. Start HITMAN via SteamVR/Steamlink
 6. Play
 
