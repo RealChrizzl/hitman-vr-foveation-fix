@@ -34,11 +34,13 @@ pictograms on the bins. Same scene, same settings, same headset.
 
 ## Download and run
 
+### Windows
+
 1. Download the two files: `HitmanVRFoveationFix.ps1` and `HitmanVRFoveationFix.bat`
    — keep them in the same folder
-2. Double-click **`HitmanVRFoveationFix.bat`** and allow the administrator prompt
-3. Start HITMAN however you normally do, including straight into VR
-4. Play
+3. Double-click **`HitmanVRFoveationFix.bat`** and allow the administrator prompt
+4. Start HITMAN however you normally do, including straight into VR
+5. Play
 
 That is the whole procedure. Leave the small window open while you play.
 
@@ -46,7 +48,7 @@ The window tells you what is going on: grey while it waits for the game, amber w
 VR or a mission is still loading, **green when the fix is active**. If something is
 wrong it turns red and says what.
 
-### Why a .bat and not an .exe
+**Why a .bat and not an .exe**
 
 Reading another program's memory is exactly what a debugger does — and also what
 malware does. Packed PowerShell executables get flagged by antivirus software as a
@@ -55,6 +57,16 @@ click past a virus warning. A plain script you can read is more honest.
 
 The `.bat` is one line. Open it in Notepad if you like; it does nothing but start the
 script next to it.
+
+### Linux 
+1. Download the two files: 'HitmanVRFoveationFix-linux.py' and 'HitmanVRFoveationFix-linux.sh'
+   — keep them in the same folder
+3. In your terminal make the shell script executable: chmod +x HitmanVRFoveationFix-linux.sh
+4. Run the shell script: ./HitmanVRFoveationFix-linux.sh
+5. Start HITMAN via SteamVR/Steamlink
+6. Play
+
+As above, leave the script running in your terminal of choice while the game is active.
 
 ---
 
