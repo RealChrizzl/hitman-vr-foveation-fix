@@ -10,10 +10,10 @@ only thing left blurring the picture. On Fresnel headsets (Quest 2, Quest 3S, Ri
 it works too, the gain is just smaller because the lenses already soften the
 periphery.
 
-PC VR only, not the standalone version. Both of the game's VR backends work:
-**Oculus** (Quest via Link or Air Link, Rift S) and **SteamVR** (anything on
-OpenVR, including Quest headsets over Steam Link or Virtual Desktop, and Vive,
-Index, Bigscreen Beyond and friends).
+PC VR only, not the standalone version. Both of the game's VR backends are supported
+and verified: **Oculus** (Quest via Link or Air Link, Rift S) and **SteamVR / OpenVR**
+(including headsets connected through Steam Link, Virtual Desktop or their native
+PC streaming software).
 
 ---
 
@@ -41,6 +41,10 @@ pictograms on the bins. Same scene, same settings, same headset.
 4. Play
 
 That is the whole procedure. Leave the small window open while you play.
+
+> **SteamVR / OpenVR:** v1.3 replaces the timing-sensitive v1.2 reload logic and has
+> been visually verified in the headset across new missions, mission restarts,
+> save-game loads, scene changes and Freelancer mode.
 
 The window tells you what is going on: grey while it waits for the game, amber while
 VR or a mission is still loading, **green when the fix is active**. If something is
@@ -94,13 +98,16 @@ No resolution setting is changed. You do not need to raise anything.
 
 ## Is it safe
 
-- **Nothing is written to disk.** No game file is modified, nothing is installed,
-  nothing is left behind. Every change is made in the memory of the running process
-  and disappears the moment you close HITMAN.
+- **No game file or setting is modified.** Renderer changes are made in the memory
+  of the running process and disappear when you close HITMAN. The tool keeps a small
+  `foveationfix.log` beside the script so timing problems can be diagnosed; it contains
+  timestamps and renderer state changes and can be deleted at any time.
 - It refuses to do anything if the game code is not in its original state, if VR is
   already running when it attaches, or if the VR device does not look the way it
   expects.
-- Turning it off or closing the window restores everything.
+- Turning it off or closing the window restores the bytes owned by that tool
+  instance when they are still safe to touch. Closing HITMAN itself always discards
+  every in-memory change.
 
 **Said plainly:** it does write to the memory of a game that has an online connection.
 That has been fine in testing, but you should know it before you decide. There is no
@@ -135,7 +142,8 @@ something different, and the message alone usually identifies the cause.
 For anything beyond that there is a read-only diagnostic in
 [`tools/`](tools/). Put `HitmanVRProbe.ps1` and `HitmanVRProbe.bat` in the same
 folder, start the game, get into VR and into a mission, double-click the `.bat` and
-press **Copy report**.
+press **Copy report**. Probe v1.1 also reports whether every live code site is
+stock, fixed, or unexpected; a foveation value of zero is now displayed correctly.
 
 It imports only `OpenProcess`, `ReadProcessMemory` and `CloseHandle` — no write
 function is declared at all, so it cannot modify the game even in principle.

@@ -1,5 +1,5 @@
 <#
-    HitmanVRFoveationFix  v1.2
+    HitmanVRFoveationFix  v1.3
     Edge-to-edge sharpness for HITMAN World of Assassination in PC VR.
 
     WHAT IT DOES
@@ -46,9 +46,10 @@
       launching through an OpenXR runtime lands on SteamVR anyway.
 
     WHAT IT TOUCHES
-      Nothing on disk. No game file is modified, nothing is written next to the
-      game. All changes are made in the memory of the running process and are
-      gone the moment you close HITMAN.
+      No game file or setting is modified. The tool writes a small
+      foveationfix.log next to itself for diagnostics. All renderer changes are
+      made in the memory of the running process and are gone the moment you
+      close HITMAN.
 
       It does write to the memory of a game that has an online connection. That
       is said plainly because you should know it. Use at your own discretion.
@@ -82,6 +83,21 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# Two instances can both observe stock code before either writes it, then each
+# believe it owns the patch. A named mutex closes that race before any game
+# handle is opened.
+$script:instanceMutex=New-Object Threading.Mutex($false,"Local\HitmanVRFoveationFix")
+$script:mutexOwned=$false
+try { $script:mutexOwned=$script:instanceMutex.WaitOne(0,$false) }
+catch [Threading.AbandonedMutexException] { $script:mutexOwned=$true }
+if (-not $script:mutexOwned) {
+    [Windows.Forms.MessageBox]::Show(
+        "HitmanVRFoveationFix is already running in this Windows session.",
+        "HitmanVRFoveationFix","OK","Information") | Out-Null
+    $script:instanceMutex.Dispose()
+    exit
+}
 
 if (-not ("HmFix" -as [type])) {
     Add-Type -TypeDefinition @'
@@ -233,35 +249,96 @@ function Find-Sig { param([byte[]]$hay,[string]$pat)
     return $hits }
 
 # --- state -----------------------------------------------------------------
-$script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:base=0L
+$script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:process=$null; $script:base=0L
 $script:mode=""            # verified | scanned
 $script:sites=@()
+$script:writtenSites=@()    # only sites this instance owns and may restore
 $script:devSlot=0L         # pattern path: RVA of the device pointer
 $script:wnoOff=$OFF_ACTIVE
 $script:patched=$false
-$script:dev=0L; $script:tex=0L; $script:valsOk=$false; $script:needRel=$false
+$script:dev=0L; $script:lastTrans=-1L; $script:needRel=$false
+$script:pendingValueWrite=$false
+$script:stableReady=0; $script:stableSince=0L
 $script:scaleStock=$null; $script:maskStock=$null
+$script:scaleTouched=$false; $script:maskTouched=$false
+$script:deviceRestoreUncertain=$false
+$script:runtimeLoaded=$false; $script:lastRuntimeCheck=0L
+$script:lastWriteLog=[DateTime]::MinValue; $script:lastUi=""
 $script:fatal=""; $script:stopped=$false
+
+function Reset-DeviceState { param([bool]$OwnershipBecameUncertain=$false)
+    if ($OwnershipBecameUncertain -and ($script:scaleTouched -or $script:maskTouched)) {
+        $script:deviceRestoreUncertain=$true }
+    $script:dev=0L; $script:lastTrans=-1L; $script:needRel=$false
+    $script:pendingValueWrite=$false
+    $script:stableReady=0; $script:stableSince=0L
+    $script:scaleStock=$null; $script:maskStock=$null
+    $script:scaleTouched=$false; $script:maskTouched=$false
+    $script:runtimeLoaded=$false; $script:lastRuntimeCheck=0L
+    $script:lastWriteLog=[DateTime]::MinValue }
+
+function Advance-Lifecycle {
+    param([Int64]$LastTransition,[bool]$NeedReload,[UInt32]$Transition,[bool]$ValuesWritten)
+    $changed=($LastTransition -ne [Int64]$Transition)
+    if ($Transition -ne 3) { $NeedReload=$false }
+    elseif ($ValuesWritten) { $NeedReload=$true }
+    return [pscustomobject]@{
+        LastTransition=[Int64]$Transition
+        NeedReload=$NeedReload
+        TransitionChanged=$changed
+        ResetStable=($changed -or $ValuesWritten) }
+}
 
 function Detach {
     if ($script:handle -ne [IntPtr]::Zero) { [HmFix]::CloseHandle($script:handle) | Out-Null }
-    $script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:base=0L
-    $script:mode=""; $script:sites=@(); $script:devSlot=0L; $script:patched=$false
-    $script:dev=0L; $script:tex=0L; $script:valsOk=$false; $script:needRel=$false
-    $script:scaleStock=$null; $script:maskStock=$null }
+    $script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:process=$null; $script:base=0L
+    $script:mode=""; $script:sites=@(); $script:writtenSites=@(); $script:devSlot=0L; $script:patched=$false
+    $script:dev=0L; $script:lastTrans=-1L; $script:needRel=$false
+    $script:pendingValueWrite=$false
+    $script:stableReady=0; $script:stableSince=0L
+    $script:scaleStock=$null; $script:maskStock=$null
+    $script:scaleTouched=$false; $script:maskTouched=$false
+    $script:deviceRestoreUncertain=$false
+    $script:runtimeLoaded=$false; $script:lastRuntimeCheck=0L
+    $script:lastWriteLog=[DateTime]::MinValue; $script:lastUi="" }
 
 function Restore {
-    if ($script:handle -eq [IntPtr]::Zero) { return }
-    try {
-        if ($script:valsOk -and $script:dev -ne 0) {
+    if ($script:handle -eq [IntPtr]::Zero) { return $true }
+    $ok=-not $script:deviceRestoreUncertain
+    if ($script:dev -ne 0) {
+        $deviceCurrent=$false
+        try { $deviceCurrent=((Get-Dev) -eq $script:dev) } catch {}
+        if (-not $deviceCurrent -and ($script:scaleTouched -or $script:maskTouched)) { $ok=$false }
+        if ($deviceCurrent -and $script:scaleTouched) {
             $sb = $script:scaleStock; if ($null -eq $sb) { $sb = W2B $SCALE_STOCK }
-            $mb = $script:maskStock;  if ($null -eq $mb) { $mb = $MASK_STOCK }
-            try { WB $script:handle ($script:dev+$OFF_SCALE) $sb } catch {}
-            try { WB $script:handle ($script:dev+$OFF_MASK)  $mb } catch {} }
-        if ($script:patched) {
-            foreach ($s in $script:sites) { try { WB $script:handle ($script:base+$s.RVA) $s.Stock } catch {} } }
-        Log "restored"
-    } catch {} }
+            try {
+                $cur=RB $script:handle ($script:dev+$OFF_SCALE) 16
+                if (Same $cur (W2B $SCALE_FIX)) {
+                    if ((Get-Dev) -ne $script:dev) { throw "device changed during restore" }
+                    WB $script:handle ($script:dev+$OFF_SCALE) $sb
+                    if (-not (Same (RB $script:handle ($script:dev+$OFF_SCALE) 16) $sb)) { $ok=$false } }
+                elseif (-not (Same $cur $sb)) { $ok=$false } }
+            catch { $ok=$false } }
+        if ($deviceCurrent -and $script:maskTouched) {
+            $mb = $script:maskStock; if ($null -eq $mb) { $mb = $MASK_STOCK }
+            try {
+                $cur=RB $script:handle ($script:dev+$OFF_MASK) 8
+                if (Same $cur $MASK_FIX) {
+                    if ((Get-Dev) -ne $script:dev) { throw "device changed during restore" }
+                    WB $script:handle ($script:dev+$OFF_MASK) $mb
+                    if (-not (Same (RB $script:handle ($script:dev+$OFF_MASK) 8) $mb)) { $ok=$false } }
+                elseif (-not (Same $cur $mb)) { $ok=$false } }
+            catch { $ok=$false } } }
+    foreach ($s in $script:writtenSites) {
+        try {
+            $cur=RB $script:handle ($script:base+$s.RVA) $s.Fix.Length
+            if (Same $cur $s.Fix) {
+                WB $script:handle ($script:base+$s.RVA) $s.Stock
+                if (-not (Same (RB $script:handle ($script:base+$s.RVA) $s.Stock.Length) $s.Stock)) { $ok=$false } }
+            elseif (-not (Same $cur $s.Stock)) { $ok=$false } }
+        catch { $ok=$false } }
+    Log $(if($ok){"restored"}else{"restore incomplete - close HITMAN"})
+    return $ok }
 
 # --- window ----------------------------------------------------------------
 $form=New-Object Windows.Forms.Form
@@ -303,7 +380,7 @@ $steps=New-Object Windows.Forms.Label
 $steps.Location=New-Object Drawing.Point(22,214); $steps.Size=New-Object Drawing.Size(478,34)
 $steps.Font=New-Object Drawing.Font("Segoe UI",9)
 $steps.ForeColor=[Drawing.Color]::FromArgb(90,90,90)
-$steps.Text="Leave this window open while you play. Nothing is written to disk - closing HITMAN undoes everything."
+$steps.Text="Leave this window open while you play. No game file is changed - closing HITMAN undoes the renderer changes."
 $form.Controls.Add($steps)
 
 $btnStop=New-Object Windows.Forms.Button
@@ -313,13 +390,16 @@ $form.Controls.Add($btnStop)
 
 $link=New-Object Windows.Forms.LinkLabel
 $link.Location=New-Object Drawing.Point(240,260); $link.Size=New-Object Drawing.Size(260,22)
-$link.Text="v1.2 by RealChrizzl - project page"
+$link.Text="v1.3 by RealChrizzl - project page"
 $link.LinkArea=New-Object Windows.Forms.LinkArea(22,12)
 $link.TextAlign="MiddleRight"
 $link.Add_LinkClicked({ Start-Process "https://github.com/RealChrizzl/hitman-vr-foveation-fix" })
 $form.Controls.Add($link)
 
 function Show-State { param($colour,$head,$body,$warn="")
+    $uiKey=$colour+"`n"+$head+"`n"+$body+"`n"+$warn
+    if ($script:lastUi -eq $uiKey) { return }
+    $script:lastUi=$uiKey
     $dot.ForeColor = switch ($colour) {
         "green" { [Drawing.Color]::FromArgb(0,150,60) }
         "amber" { [Drawing.Color]::FromArgb(220,140,0) }
@@ -355,7 +435,9 @@ function Try-Attach {
             if ($h.Count -ne 1) {
                 $script:fatal="The code for '" + $s.What + "' could not be located uniquely in this build. Nothing was changed. Please report this build on the project page."
                 return $false }
-            $sites += [pscustomobject]@{ RVA=[int64]($pe2.TextRVA+$h[0]+$s.Hit); Stock=$null; Fix=$s.Fix } }
+            $stock=New-Object byte[] $s.Fix.Length
+            [Array]::Copy($pe2.Text,$h[0]+$s.Hit,$stock,0,$stock.Length)
+            $sites += [pscustomobject]@{ RVA=[int64]($pe2.TextRVA+$h[0]+$s.Hit); Stock=$stock; Fix=$s.Fix } }
         $h=@(Find-Sig $pe2.Text $SIG_DEVICE_PAT)
         if ($h.Count -ne 1) { $script:fatal="The VR device reference could not be located uniquely in this build. Nothing was changed."; return $false }
         $at=$h[0]
@@ -368,7 +450,7 @@ function Try-Attach {
     $hnd=[HmFix]::OpenProcess(0x1F0FFF,$false,$p.Id)
     if ($hnd -eq [IntPtr]::Zero) { $script:fatal="Access denied. Close this tool and start it as administrator."; return $false }
 
-    $script:handle=$hnd; $script:gamePid=$p.Id; $script:base=$b
+    $script:handle=$hnd; $script:gamePid=$p.Id; $script:process=$p; $script:base=$b
     $script:mode=$mode; $script:sites=$sites; $script:devSlot=$slot; $script:wnoOff=$wno
     Log ("attached pid {0}, build {1}, mode {2}" -f $p.Id,$stamp,$mode)
     return $true }
@@ -410,22 +492,114 @@ function VR-Running {
 
 # Either backend is fine - the device layout is identical, verified on both.
 function VR-Runtime-Loaded {
-    try { foreach ($m in (Get-Process -Id $script:gamePid).Modules) {
+    try {
+        # Process.Modules is cached by System.Diagnostics.Process. Refresh is
+        # required or a runtime loaded after the first check is never observed.
+        $script:process.Refresh()
+        foreach ($m in $script:process.Modules) {
             if ($m.ModuleName -like "LibOVRRT*" -or $m.ModuleName -like "openvr_api*") { return $true } } } catch {}
     return $false }
 
-function Apply-Code {
-    # pattern path: take the original bytes straight from the process
-    foreach ($s in $script:sites) {
-        if ($null -eq $s.Stock) {
-            $s.Stock = RB $script:handle ($script:base+$s.RVA) $s.Fix.Length } }
+# Read and neutralise the device values as soon as its geometry block is valid.
+# In particular this runs before +0x319 becomes active.  OpenVR rebuilds the
+# shader/constant-buffer state during mission and save-game loads; changing these
+# fields only after that rebuild leaves the old centre mask cached on the GPU.
+function Sync-RenderValues { param([Int64]$d)
+    $result=[pscustomobject]@{ Initialized=$false; Fixed=$false; Wrote=$false; Error="" }
 
+    $fb=RB $script:handle ($d+$OFF_FOV) 16
+    for ($i=0;$i -lt 4;$i++) {
+        $f=[BitConverter]::ToSingle($fb,$i*4)
+        if ([Single]::IsNaN($f) -or [Single]::IsInfinity($f) -or $f -lt 0.2 -or $f -gt 3.0) {
+            return $result } }
+
+    $sb=RB $script:handle ($d+$OFF_SCALE) 16
+    for ($i=0;$i -lt 4;$i++) {
+        $f=[BitConverter]::ToSingle($sb,$i*4)
+        # All-zero scale fields mean the device builder has not reached this
+        # block yet.  Do not capture or overwrite partially constructed data.
+        if ([Single]::IsNaN($f) -or [Single]::IsInfinity($f) -or $f -lt 0.05 -or $f -gt 20.0) {
+            return $result } }
+
+    $mb=RB $script:handle ($d+$OFF_MASK) 8
+    for ($i=0;$i -lt 2;$i++) {
+        $f=[BitConverter]::ToSingle($mb,$i*4)
+        if ([Single]::IsNaN($f) -or [Single]::IsInfinity($f) -or $f -lt -0.01 -or $f -gt 4.0) {
+            return $result } }
+
+    $result.Initialized=$true
+    $scaleFixBytes=W2B $SCALE_FIX
+    $sOk=Same $sb $scaleFixBytes
+    $mOk=Same $mb $MASK_FIX
+
+    if (-not $sOk) {
+        $wasTouched=$script:scaleTouched
+        if (-not $wasTouched) { $script:scaleStock=$sb }
+        # Claim ownership before the call. WriteProcessMemory may modify a prefix
+        # (or even all bytes) and still report failure/a short write.
+        $script:scaleTouched=$true; $result.Wrote=$true
+        try { WB $script:handle ($d+$OFF_SCALE) $scaleFixBytes } catch {}
+        try { $after=RB $script:handle ($d+$OFF_SCALE) 16 }
+        catch {
+            $script:deviceRestoreUncertain=$true
+            $result.Error="Scale write could not be verified. Close HITMAN if this repeats."
+            return $result }
+        if (-not (Same $after $scaleFixBytes)) {
+            $rolledBack=Same $after $sb
+            if (-not $rolledBack) {
+                try {
+                    WB $script:handle ($d+$OFF_SCALE) $sb
+                    $rolledBack=Same (RB $script:handle ($d+$OFF_SCALE) 16) $sb }
+                catch { $rolledBack=$false } }
+            if ($rolledBack -and -not $wasTouched) {
+                $script:scaleTouched=$false; $script:scaleStock=$null }
+            if (-not $rolledBack) { $script:deviceRestoreUncertain=$true }
+            $result.Error=if($rolledBack){"Scale write failed and was rolled back; retrying."}else{"Scale write left an unknown value. Close HITMAN."}
+            return $result } }
+    if (-not $mOk) {
+        $wasTouched=$script:maskTouched
+        if (-not $wasTouched) { $script:maskStock=$mb }
+        $script:maskTouched=$true; $result.Wrote=$true
+        try { WB $script:handle ($d+$OFF_MASK) $MASK_FIX } catch {}
+        try { $after=RB $script:handle ($d+$OFF_MASK) 8 }
+        catch {
+            $script:deviceRestoreUncertain=$true
+            $result.Error="Mask write could not be verified. Close HITMAN if this repeats."
+            return $result }
+        if (-not (Same $after $MASK_FIX)) {
+            $rolledBack=Same $after $mb
+            if (-not $rolledBack) {
+                try {
+                    WB $script:handle ($d+$OFF_MASK) $mb
+                    $rolledBack=Same (RB $script:handle ($d+$OFF_MASK) 8) $mb }
+                catch { $rolledBack=$false } }
+            if ($rolledBack -and -not $wasTouched) {
+                $script:maskTouched=$false; $script:maskStock=$null }
+            if (-not $rolledBack) { $script:deviceRestoreUncertain=$true }
+            $result.Error=if($rolledBack){"Mask write failed and was rolled back; retrying."}else{"Mask write left an unknown value. Close HITMAN."}
+            return $result } }
+
+    # A failed or immediately overwritten value must not result in a green
+    # status.  A later tick retries it during the same loading transition.
+    try {
+        $result.Fixed = (Same (RB $script:handle ($d+$OFF_SCALE) 16) $scaleFixBytes) -and
+                        (Same (RB $script:handle ($d+$OFF_MASK) 8) $MASK_FIX) }
+    catch {
+        # Preserve Wrote=true so a write made after transition 3 still latches
+        # the required reload even when this final verification read is lost.
+        $result.Error="Render values were written but the final verification read failed; retrying."
+        return $result }
+    return $result }
+
+function Apply-Code {
     $allFix=$true; $allStock=$true
     foreach ($s in $script:sites) {
         $cur = RB $script:handle ($script:base+$s.RVA) $s.Fix.Length
         if (-not (Same $cur $s.Fix))   { $allFix=$false }
         if (-not (Same $cur $s.Stock)) { $allStock=$false } }
-    if ($allFix) { $script:patched=$true; return $true }
+    if ($allFix) {
+        $script:fatal="HITMAN was already patched before this tool attached. Close every fix window and HITMAN, then start this tool again."
+        return $false }
     if (-not $allStock) {
         $script:fatal="The game code is not in its original state. Close HITMAN, start it again, then this tool."
         return $false }
@@ -434,25 +608,51 @@ function Apply-Code {
         $script:fatal="VR was already running when this tool attached. Close HITMAN, start this tool first, then the game."
         return $false }
 
-    foreach ($s in $script:sites) { WB $script:handle ($script:base+$s.RVA) $s.Fix }
-    Start-Sleep -Milliseconds 60
-    foreach ($s in $script:sites) {
-        if (-not (Same (RB $script:handle ($script:base+$s.RVA) $s.Fix.Length) $s.Fix)) {
-            $script:fatal="A patch did not stick. Please restart HITMAN."; return $false } }
+    $written=@()
+    try {
+        foreach ($s in $script:sites) {
+            # Include the site before attempting the write: WriteProcessMemory
+            # can modify a prefix and still report a short/failed write.
+            $written += $s
+            WB $script:handle ($script:base+$s.RVA) $s.Fix }
+        Start-Sleep -Milliseconds 60
+        foreach ($s in $script:sites) {
+            if (-not (Same (RB $script:handle ($script:base+$s.RVA) $s.Fix.Length) $s.Fix)) {
+                throw "verification failed" } }
+    } catch {
+        # Never leave the game with only a subset of the five instructions
+        # patched.  Roll back every site written by this attempt immediately.
+        $rollbackOk=$true
+        foreach ($s in $written) {
+            try {
+                WB $script:handle ($script:base+$s.RVA) $s.Stock
+                if (-not (Same (RB $script:handle ($script:base+$s.RVA) $s.Stock.Length) $s.Stock)) {
+                    $rollbackOk=$false } }
+            catch { $rollbackOk=$false } }
+        $script:writtenSites=@()
+        if ($rollbackOk) {
+            $script:fatal="A patch did not stick. The partial change was rolled back; please restart HITMAN." }
+        else {
+            $script:fatal="A patch failed and could not be rolled back safely. Close HITMAN now; all changes disappear when the game exits." }
+        return $false }
+    $script:writtenSites=$written
     $script:patched=$true; Log "code patched"
     return $true }
 
 # --- main loop -------------------------------------------------------------
 $timer=New-Object Windows.Forms.Timer
-$timer.Interval=250
+$timer.Interval=15
 $timer.Add_Tick({
     try {
         if ($script:stopped) { return }
 
-        if ($script:handle -ne [IntPtr]::Zero -and -not (Get-Process -Id $script:gamePid -ErrorAction SilentlyContinue)) {
-            Log "game closed"; Detach; $script:fatal=""
-            Show-State "grey" "Waiting for HITMAN" "The game was closed. Start it again and this tool will patch it once more."
-            $btnStop.Enabled=$false; return }
+        if ($script:handle -ne [IntPtr]::Zero) {
+            $gameClosed=$false
+            try { $gameClosed=($null -eq $script:process -or $script:process.HasExited) } catch { $gameClosed=$true }
+            if ($gameClosed) {
+                Log "game closed"; Detach; $script:fatal=""
+                Show-State "grey" "Waiting for HITMAN" "The game was closed. Start it again and this tool will patch it once more."
+                $btnStop.Enabled=$false; return } }
 
         if ($script:fatal) { Show-State "red" "Not active" $script:fatal; return }
 
@@ -472,10 +672,18 @@ $timer.Add_Tick({
 
         $d = Get-Dev
         if ($d -eq -1L) {
+            if ($script:dev -ne 0) { Reset-DeviceState $true }
             Show-State "red" "Unsupported backend" "The active VR device is neither the Oculus nor the SteamVR one this tool was verified against."
             return }
-        if ($d -eq 0L) { Show-State "amber" "Ready - start VR" $ready $warn; return }
-        $script:dev=$d
+        if ($d -eq 0L) {
+            if ($script:dev -ne 0) {
+                Log "VR device became unavailable"
+                Reset-DeviceState $true }
+            Show-State "amber" "Ready - start VR" $ready $warn; return }
+        if ($d -ne $script:dev) {
+            if ($script:dev -ne 0) { Reset-DeviceState $true } else { Reset-DeviceState }
+            $script:dev=$d
+            Log ("VR device found at 0x{0:X}" -f $d) }
 
         $active=U8  $script:handle ($d+$OFF_ACTIVE)
         $wno   =U8  $script:handle ($d+$script:wnoOff)
@@ -485,65 +693,111 @@ $timer.Add_Tick({
         $w     =U32 $script:handle ($d+$OFF_W)
         $h     =U32 $script:handle ($d+$OFF_H)
 
-        if ($active -ne 1) { Show-State "amber" "Ready - start VR" $ready $warn; return }
-        if ($script:mode -eq "scanned" -and -not (VR-Runtime-Loaded)) {
-            Show-State "red" "No VR runtime" "Neither the Oculus nor the SteamVR runtime is loaded in the game."
+        if ($script:mode -eq "scanned" -and -not $script:runtimeLoaded) {
+            $runtimeNow=[Diagnostics.Stopwatch]::GetTimestamp()
+            $runtimeAge=if($script:lastRuntimeCheck -eq 0){[double]::PositiveInfinity}else{($runtimeNow-$script:lastRuntimeCheck)*1000.0/[Diagnostics.Stopwatch]::Frequency}
+            if ($runtimeAge -ge 500) {
+                $script:runtimeLoaded=VR-Runtime-Loaded
+                $script:lastRuntimeCheck=$runtimeNow }
+        }
+        if ($script:mode -eq "scanned" -and -not $script:runtimeLoaded) {
+            $script:stableReady=0; $script:stableSince=0L
+            $script:lastTrans=-1L; $script:needRel=$false
+            if ($active -eq 1) {
+                Show-State "red" "No VR runtime" "Neither the Oculus nor the SteamVR runtime is loaded in the game." }
+            else { Show-State "amber" "Ready - start VR" $ready $warn }
             return }
-        if ($wno -ne 0) {
+
+        if ($active -eq 1 -and $wno -ne 0) {
+            $script:stableReady=0; $script:stableSince=0L
             Show-State "red" "Not active" "VR started before the patch could take effect. Close HITMAN, start this tool first, then the game."
             return }
 
-        if ($tex -ne $script:tex) { $script:tex=$tex; $script:needRel=$false; $script:valsOk=$false }
+        $sync=Sync-RenderValues $d
+        if ($sync.Wrote) {
+            $script:pendingValueWrite=$true
+            # Close the read/write race: classify the write using a fresh state
+            # sample. The renderer may have reached transition 3 while the two
+            # value groups were being written.
+            $active=U8  $script:handle ($d+$OFF_ACTIVE)
+            $wno   =U8  $script:handle ($d+$script:wnoOff)
+            $trans =U32 $script:handle ($d+$OFF_TRANS)
+            $layers=U16 $script:handle ($d+$OFF_LAYERS)
+            $tex   =I64 $script:handle ($d+$OFF_TEX)
+            $w     =U32 $script:handle ($d+$OFF_W)
+            $h     =U32 $script:handle ($d+$OFF_H) }
 
-        # The two backends report slightly different numbers here, so this is a
-        # plausibility check rather than an exact match: four tangent values that
-        # must sit in a sane range. Wrong layout fails it, a different headset
-        # does not.
-        $fovOk=$false
-        try {
-            $fb = RB $script:handle ($d+$OFF_FOV) 16
-            $fovOk=$true
-            for ($i=0;$i -lt 4;$i++) {
-                $f=[BitConverter]::ToSingle($fb,$i*4)
-                if ($f -lt 0.2 -or $f -gt 3.0) { $fovOk=$false } }
-        } catch {}
+        if ($active -eq 1 -and $wno -ne 0) {
+            $script:stableReady=0; $script:stableSince=0L
+            Show-State "red" "Not active" "VR started before the patch could take effect. Close HITMAN, start this tool first, then the game."
+            return }
 
-        if ($fovOk) {
-            $sOk = Same (RB $script:handle ($d+$OFF_SCALE) 16) (W2B $SCALE_FIX)
-            $mOk = Same (RB $script:handle ($d+$OFF_MASK) 8) $MASK_FIX
-            if (-not ($sOk -and $mOk)) {
-                # remember what was actually there before touching it
-                if ($null -eq $script:scaleStock) {
-                    try { $script:scaleStock = RB $script:handle ($d+$OFF_SCALE) 16 } catch {}
-                    try { $script:maskStock  = RB $script:handle ($d+$OFF_MASK) 8 }  catch {} }
-                WB $script:handle ($d+$OFF_SCALE) (W2B $SCALE_FIX)
-                WB $script:handle ($d+$OFF_MASK)  $MASK_FIX
-                if ($trans -eq 3) { $script:needRel=$true }
-                $script:valsOk=$true
-                Log ("values written, transition=" + $trans) } }
+        $life=Advance-Lifecycle $script:lastTrans $script:needRel $trans $script:pendingValueWrite
+        if ($life.TransitionChanged) {
+            Log ("transition {0} -> {1}" -f $script:lastTrans,$trans) }
+        $script:lastTrans=$life.LastTransition
+        $script:needRel=$life.NeedReload
+        $script:pendingValueWrite=$false
+        if ($life.ResetStable) { $script:stableReady=0; $script:stableSince=0L }
+
+        if ($sync.Wrote) {
+            $now=Get-Date
+            if (($now-$script:lastWriteLog).TotalSeconds -ge 1) {
+                Log ("values synchronised, transition={0}, active={1}" -f $trans,$active)
+                $script:lastWriteLog=$now } }
+
+        if ($sync.Error) {
+            $script:stableReady=0; $script:stableSince=0L
+            Show-State "red" "Renderer write failed" $sync.Error $warn
+            return }
+
+        if ($active -ne 1) {
+            $script:stableReady=0; $script:stableSince=0L
+            Show-State "amber" "Ready - start VR" $ready $warn; return }
+
+        if (-not $sync.Initialized -or -not $sync.Fixed) {
+            $script:stableReady=0; $script:stableSince=0L
+            Show-State "amber" "Waiting for the VR renderer" "The device is still initialising. The fix will arm before its render state is built." $warn
+            return }
 
         if ($trans -ne 3 -or $layers -ne 2 -or $tex -eq 0) {
+            $script:stableReady=0; $script:stableSince=0L
             Show-State "amber" "Waiting for a mission" "VR is running in two-layer mode. Load a mission and the fix becomes active." $warn
             return }
 
         if ($script:needRel) {
+            $script:stableReady=0; $script:stableSince=0L
             Show-State "amber" "Reload this mission once" "The fix is set, but this mission was already running when it was applied. Reload it once and the image will be sharp everywhere." $warn
         } else {
-            Show-State "green" "Active" ("Sharp from edge to edge. Rendering {0} x {1} per eye in two layers instead of four." -f $w,$h) $warn }
+            $stableNow=[Diagnostics.Stopwatch]::GetTimestamp()
+            if ($script:stableSince -eq 0) { $script:stableSince=$stableNow }
+            if ($script:stableReady -lt 3) { $script:stableReady++ }
+            $stableMs=($stableNow-$script:stableSince)*1000.0/[Diagnostics.Stopwatch]::Frequency
+            if ($script:stableReady -lt 3 -or $stableMs -lt 250) {
+                Show-State "amber" "Finishing the mission load" "The render values are correct. Waiting briefly to make sure they remain stable." $warn
+            } else {
+                Show-State "green" "Active" ("Sharp from edge to edge. Rendering {0} x {1} per eye in two layers instead of four." -f $w,$h) $warn } }
     } catch {
         Show-State "red" "Something went wrong" ($_.Exception.Message + "  Close HITMAN and try again.") }
 })
 $timer.Start()
 
 $btnStop.Add_Click({
-    Restore; Detach
+    $restored=Restore; Detach
     $script:stopped=$true; $script:fatal=""
     $btnStop.Enabled=$false
-    Show-State "grey" "Turned off" "Everything was restored. Close and reopen this tool to use the fix again." })
+    if ($restored) {
+        Show-State "grey" "Turned off" "Everything this tool changed was restored. Close and reopen it to use the fix again." }
+    else {
+        Show-State "amber" "Close HITMAN" "A live value could not be restored safely. Closing the game always discards every in-memory change." } })
 
 $form.Add_FormClosing({
-    $timer.Stop(); Restore
+    $timer.Stop(); Restore | Out-Null
     if ($script:handle -ne [IntPtr]::Zero) { [HmFix]::CloseHandle($script:handle) | Out-Null }
+    if ($script:mutexOwned) {
+        try { $script:instanceMutex.ReleaseMutex() } catch {}
+        $script:mutexOwned=$false }
+    try { $script:instanceMutex.Dispose() } catch {}
     Log "closed" })
 
 [void]$form.ShowDialog()

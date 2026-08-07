@@ -71,13 +71,27 @@ else — the device layout, the field offsets, the other three patches — is sh
 between them, which was confirmed by comparing probe reports from both runtimes on
 the same machine.
 
-### Once a mission is loaded
+### While VR and a mission initialise
 
 | Field | Value | Effect |
 |---|---|---|
 | `device+0x490 … +0x49C` | `1.0` ×4 | small/large scale ratios neutralised |
 | `device+0x4C0` | `0` | overlay pass off — removes the ghost images |
 | `device+0x4C4` | `0` | removes the black circle in the centre |
+
+OpenVR rebuilds the render state during mission, scene, and save-game loads. These
+fields must therefore be neutralised before that state reaches transition 3, not
+merely after a new texture pointer appears. v1.3 watches the transition at 15 ms,
+writes as soon as the device geometry is plausible (including before `active=1`),
+reads the values back, and requires multiple samples plus a 250 ms monotonic stable
+window before showing green. A write first observed after transition 3 remains amber
+and asks for one real reload.
+
+This lifecycle has been visually verified in the headset across new missions,
+mission restarts, save-game loads, scene changes and Freelancer mode. Polling is
+still not the same as synchronising with the render thread; if a future game build
+reintroduces a fast-load race, the next step is to re-derive and patch the scale/mask
+producer or constant-buffer builder from that build's binary.
 
 Stock values for reference: `+0x490…` = `3EDF2BF0 3ECE8B44 4012D426 401EA625`,
 `+0x4C0/+0x4C4` = `3D 2D 66 3F  DA B9 4D 3E`.

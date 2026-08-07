@@ -1,20 +1,18 @@
 <#
-    HitmanVRProbe  v1.0
+    HitmanVRProbe  v1.1
     Read-only diagnostic for HitmanVRFoveationFix.
 
     WHAT THIS IS FOR
-      HitmanVRFoveationFix currently only supports the Oculus / LibOVR backend.
-      To add SteamVR / OpenVR support I need to know whether the OpenVR device
-      object in HITMAN has the same internal layout as the Oculus one.
+      This tool verifies the live patch bytes and reads the renderer lifecycle
+      values needed to diagnose Oculus and SteamVR / OpenVR problems. It prints a
+      report you can paste into a GitHub issue.
 
-      This tool finds out. It reads a handful of values out of the running game
-      and prints a report you can paste into a GitHub issue.
-
-    IT WRITES NOTHING
-      No patching, no modification, no side effects. Verify it yourself: the only
-      three functions it imports from kernel32 are OpenProcess, ReadProcessMemory
-      and CloseHandle. No write function is declared at all, so it could not
-      modify the game even if it tried.
+    IT WRITES NOTHING TO HITMAN
+      No game patching or process-memory modification. Verify it yourself: the
+      only three functions it imports from kernel32 are OpenProcess,
+      ReadProcessMemory and CloseHandle. No process-memory write function is
+      declared at all, so it could not modify the game even if it tried. The
+      Copy and Save buttons only copy or save the displayed report on request.
 
       The process is opened with access mask 0x0410, which is
       PROCESS_QUERY_INFORMATION together with PROCESS_VM_READ. No write right is
@@ -74,14 +72,15 @@ $ACCESS = 0x0410
 $VERIFIED_TIMESTAMP = 1781013974
 
 $SIGS = [ordered]@{
-  "layer writer A"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C1 88 8F 1B 03 00 00"; Hit=9 }
-  "layer writer B"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C0 88 87 1B 03 00 00"; Hit=9 }
-  "field of view"    = @{ Pattern="C0 08 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44 }
-  "view count"       = @{ Pattern="74 16 49 8B 85 A0 41 01 00 41 8B CF 80 B8 1B 03 00 00 00 0F 45 CF"; Hit=12 }
+  "layer writer A"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C1 88 8F 1B 03 00 00"; Hit=9; Stock=[byte[]](0x0F,0x94,0xC1); Fix=[byte[]](0xB1,0x00,0x90) }
+  "layer writer B"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C0 88 87 1B 03 00 00"; Hit=9; Stock=[byte[]](0x0F,0x94,0xC0); Fix=[byte[]](0xB0,0x00,0x90) }
+  "field of view A"  = @{ Pattern="C0 08 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44; Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00); Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
+  "field of view B"  = @{ Pattern="50 09 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44; Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00); Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
+  "view count"       = @{ Pattern="74 16 49 8B 85 A0 41 01 00 41 8B CF 80 B8 1B 03 00 00 00 0F 45 CF"; Hit=12; Stock=[byte[]](0x80,0xB8,0x1B,0x03,0x00,0x00,0x00); Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90) }
   "device locator"   = @{ Pattern="48 8B 0D ?? ?? ?? ?? 8B D6 48 8B 01 44 38 B9 1B 03 00 00 0F 84"; Hit=0 }
 }
 
-# offsets as known from the Oculus device
+# shared offsets observed on the Oculus and OpenVR device classes
 $FIELDS = [ordered]@{
   "mode          +0x220" = @{ Off=0x220L; Type="u32" }
   "cached mode   +0x30C" = @{ Off=0x30CL; Type="u32" }
@@ -104,6 +103,10 @@ function RB { param([IntPtr]$h,[Int64]$a,[int]$n)
     if (-not [HmProbe]::ReadProcessMemory($h,[IntPtr]$a,$b,$n,[ref]$r) -or $r.ToInt64() -ne $n) { return $null }
     return ,$b }
 function Hex { param([byte[]]$B) if ($null -eq $B) { "unreadable" } else { ($B|ForEach-Object{$_.ToString("X2")}) -join " " } }
+function Same { param([byte[]]$A,[byte[]]$B)
+    if ($null -eq $A -or $null -eq $B -or $A.Length -ne $B.Length) { return $false }
+    for ($i=0;$i -lt $A.Length;$i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+    return $true }
 
 function Find-Sig { param([byte[]]$hay,[string]$pat)
     $tok=$pat.Split(" "); $n=$tok.Count
@@ -120,7 +123,7 @@ function Find-Sig { param([byte[]]$hay,[string]$pat)
 
 function Build-Report {
     $L = New-Object Collections.Generic.List[string]
-    $L.Add("HitmanVRProbe 1.0 - read-only report")
+    $L.Add("HitmanVRProbe 1.1 - read-only report")
     $L.Add("generated " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
     $L.Add("")
 
@@ -155,12 +158,14 @@ function Build-Report {
 
     # patterns
     $L.Add("--- code patterns ---")
-    $devRVA=0L; $wnoOff=0L
+    $devRVA=0L; $wnoOff=0L; $patchSites=@()
     foreach ($k in $SIGS.Keys) {
         $h=@(Find-Sig $text $SIGS[$k].Pattern)
         if ($h.Count -eq 1) {
             $rva=$tRVA+$h[0]+$SIGS[$k].Hit
             $L.Add(("{0,-16} : found, 1 hit, RVA 0x{1:X7}" -f $k,$rva))
+            if ($null -ne $SIGS[$k].Fix) {
+                $patchSites += [pscustomobject]@{ Name=$k; RVA=[int64]$rva; Stock=$SIGS[$k].Stock; Fix=$SIGS[$k].Fix } }
             if ($k -eq "device locator") {
                 $rel=[BitConverter]::ToInt32($text,$h[0]+3)
                 $devRVA=[int64]($tRVA+$h[0]+7+$rel)
@@ -174,28 +179,37 @@ function Build-Report {
     $hnd=[HmProbe]::OpenProcess($ACCESS,$false,$p.Id)
     if ($hnd -eq [IntPtr]::Zero) { $L.Add("Could not open the process for reading. Run as administrator."); return ($L -join "`r`n") }
     try {
+        $L.Add("--- live code ---")
+        foreach ($s in $patchSites) {
+            $cur=RB $hnd ($base+$s.RVA) $s.Fix.Length
+            $status=if ($null -eq $cur) { "unreadable" } elseif (Same $cur $s.Fix) { "fixed" } elseif (Same $cur $s.Stock) { "stock" } else { "other: " + (Hex $cur) }
+            $L.Add(("{0,-16} : {1}" -f $s.Name,$status)) }
+        $L.Add("")
+
         $L.Add("--- live device ---")
         if ($devRVA -eq 0) { $L.Add("device pointer could not be located, nothing further to read") }
         else {
             $pb = RB $hnd ($base+$devRVA) 8
-            $dev = if ($pb) { [BitConverter]::ToInt64($pb,0) } else { 0 }
+            $dev = if ($null -ne $pb) { [BitConverter]::ToInt64($pb,0) } else { 0 }
             if ($dev -eq 0) { $L.Add("device pointer is null - VR is not running yet. Get into VR and a mission, then Refresh.") }
             else {
                 $vt = RB $hnd $dev 8
-                $vtRVA = if ($vt) { [BitConverter]::ToInt64($vt,0) - $base } else { 0 }
                 $L.Add(("device object        : 0x{0:X}" -f $dev))
-                $L.Add(("device vtable RVA    : 0x{0:X7}   <-- this identifies the backend class" -f $vtRVA))
+                if ($null -ne $vt) {
+                    $vtRVA=[BitConverter]::ToInt64($vt,0)-$base
+                    $L.Add(("device vtable RVA    : 0x{0:X7}   <-- this identifies the backend class" -f $vtRVA)) }
+                else { $L.Add("device vtable RVA    : unreadable") }
                 $L.Add("")
                 foreach ($k in $FIELDS.Keys) {
                     $f=$FIELDS[$k]; $a=$dev+$f.Off
                     switch ($f.Type) {
-                        "u8"  { $r=RB $hnd $a 1;  $v=if($r){"{0}" -f $r[0]}else{"unreadable"} }
-                        "u16" { $r=RB $hnd $a 2;  $v=if($r){"{0}" -f [BitConverter]::ToUInt16($r,0)}else{"unreadable"} }
-                        "u32" { $r=RB $hnd $a 4;  $v=if($r){"{0}" -f [BitConverter]::ToUInt32($r,0)}else{"unreadable"} }
-                        "ptr" { $r=RB $hnd $a 8;  $v=if($r){"0x{0:X}" -f [BitConverter]::ToInt64($r,0)}else{"unreadable"} }
-                        "f1"  { $r=RB $hnd $a 4;  $v=if($r){"{0,-12:0.######}  raw {1}" -f [BitConverter]::ToSingle($r,0),(Hex $r)}else{"unreadable"} }
+                        "u8"  { $r=RB $hnd $a 1;  $v=if($null -ne $r){"{0}" -f $r[0]}else{"unreadable"} }
+                        "u16" { $r=RB $hnd $a 2;  $v=if($null -ne $r){"{0}" -f [BitConverter]::ToUInt16($r,0)}else{"unreadable"} }
+                        "u32" { $r=RB $hnd $a 4;  $v=if($null -ne $r){"{0}" -f [BitConverter]::ToUInt32($r,0)}else{"unreadable"} }
+                        "ptr" { $r=RB $hnd $a 8;  $v=if($null -ne $r){"0x{0:X}" -f [BitConverter]::ToInt64($r,0)}else{"unreadable"} }
+                        "f1"  { $r=RB $hnd $a 4;  $v=if($null -ne $r){"{0,-12:0.######}  raw {1}" -f [BitConverter]::ToSingle($r,0),(Hex $r)}else{"unreadable"} }
                         "f4"  { $r=RB $hnd $a 16
-                                if ($r) { $fl=@(); for($i=0;$i -lt 4;$i++){$fl+=("{0:0.######}" -f [BitConverter]::ToSingle($r,$i*4))}
+                                if ($null -ne $r) { $fl=@(); for($i=0;$i -lt 4;$i++){$fl+=("{0:0.######}" -f [BitConverter]::ToSingle($r,$i*4))}
                                           $v=("{0}   raw {1}" -f (($fl -join ", ").PadRight(38)),(Hex $r)) } else { $v="unreadable" } }
                     }
                     $L.Add(("{0,-22} : {1}" -f $k,$v)) } } }
@@ -215,7 +229,7 @@ $form.Font=New-Object Drawing.Font("Segoe UI",9)
 
 $hdr=New-Object Windows.Forms.Label
 $hdr.Location=New-Object Drawing.Point(14,12); $hdr.Size=New-Object Drawing.Size(732,40)
-$hdr.Text="This reads a few values out of the running game and writes nothing at all. Start HITMAN, get into VR and into a mission, then press Refresh."
+$hdr.Text="This only reads the running game; Copy/Save affect the report, never game memory. Start HITMAN, enter VR and a mission, then press Refresh."
 $form.Controls.Add($hdr)
 
 $box=New-Object Windows.Forms.TextBox
