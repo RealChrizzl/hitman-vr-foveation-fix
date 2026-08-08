@@ -34,21 +34,19 @@ pictograms on the bins. Same scene, same settings, same headset.
 
 ## Download and run
 
+### Windows
+
 1. Download the two files: `HitmanVRFoveationFix.ps1` and `HitmanVRFoveationFix.bat`
    — keep them in the same folder
 2. Double-click **`HitmanVRFoveationFix.bat`** and allow the administrator prompt
 3. Start HITMAN however you normally do, including straight into VR
 4. Play
 
-That is the whole procedure. Leave the small window open while you play.
+Leave the small window open while you play.
 
-> **SteamVR / OpenVR:** v1.3 replaces the timing-sensitive v1.2 reload logic and has
-> been visually verified in the headset across new missions, mission restarts,
-> save-game loads, scene changes and Freelancer mode.
-
-The window tells you what is going on: grey while it waits for the game, amber while
-VR or a mission is still loading, **green when the fix is active**. If something is
-wrong it turns red and says what.
+The window tells you what is going on: grey while it waits for the game,
+amber while VR or a mission is still loading, **green when the fix is active**. If
+something is wrong it turns red and says what.
 
 ### Why a .bat and not an .exe
 
@@ -59,6 +57,41 @@ click past a virus warning. A plain script you can read is more honest.
 
 The `.bat` is one line. Open it in Notepad if you like; it does nothing but start the
 script next to it.
+
+### Linux / Proton
+
+1. Download the two files: `Linux-HitmanVRFoveationFix-v1.3.py` and `launch.linux.HitmanVRFoveationFix-v1.3.sh`
+   — keep them in the same folder
+2. Make the launcher executable:
+
+   ```bash
+   chmod +x launch.linux.HitmanVRFoveationFix-v1.3.sh
+   ```
+
+3. Run the launcher:
+
+   ```bash
+   ./launch.linux.HitmanVRFoveationFix-v1.3.sh
+   ```
+
+4. Enter your `sudo` password when prompted
+5. Start HITMAN however you normally do, including straight into VR
+6. Play
+
+Leave the terminal open while you play. Press `Ctrl+C` to stop the fix and restore any live changes.
+
+On Linux, the same states are reported in the terminal.
+
+> **Linux/Proton/SteamVR:** v1.3 replaces the timing-sensitive v1.2 reload logic and has
+> been visually verified in the headset across new missions, mission restarts, and
+> save-game loads. The port uses the same v1.3 patches and renderer
+> values, with Linux process-memory access in place of the Windows APIs. A Linux-specific
+> 1 ms guard monitors the renderer scale and mask values because Proton can restore them
+> during save-game loads faster than the normal 15 ms lifecycle loop can catch.
+
+The Linux launcher serves the same purpose: it changes to the folder containing the
+script and starts `Linux-HitmanVRFoveationFix-v1.3.py` with the privileges required
+to access HITMAN's process memory.
 
 ---
 
