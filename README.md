@@ -30,7 +30,7 @@ The v1.5 second view-count fix and the v1.4 transparency/refraction fix are pres
 |---|---|
 | Windows / Oculus (LibOVR) | v1.6.1, supported |
 | Windows / SteamVR (OpenVR) | v1.6.1, supported |
-| Linux / Proton / SteamVR | Experimental v1.6 port |
+| Linux / Proton / SteamVR | Experimental v1.6.2 port (based on Windows v1.6.1) |
 | Standalone Quest | Not supported |
 
 The Windows implementation is verified against HITMAN World of Assassination build **3.270.1**. Other builds use conservative byte-pattern matching and fail closed if the required code cannot be located uniquely.
@@ -72,28 +72,22 @@ The `.bat` file only launches `HitmanVRFoveationFix.ps1` with the required privi
 
 ## Linux / Proton
 
-The experimental Linux/Python port is currently based on **Windows v1.6**. It includes the v1.4 transparency/refraction changes, the v1.5 second view-count fix, and the v1.6 source-level mask patches that eliminate the save/reload black-circle race at its source.
+The experimental Linux/Python port is **v1.6.2**, based on **Windows v1.6.1**. It includes the current transparency/refraction, view-count, source-level mask and unknown-build scan fixes, with Linux-specific process-memory and thread-control handling for Proton.
 
-The previous ~1 ms polling renderer guard and all scale/mask device writes have been removed. HITMAN now generates the required zero mask values itself whenever the renderer recalculates them. Scale values are left untouched and are read only as an initialization/plausibility check, while mask values are read only as a correctness check.
+The old polling renderer guard and direct scale/mask writes have been removed. Linux-specific safety checks include `PTRACE_O_EXITKILL`, strict `SIGTRAP`/RIP validation, wrapper balance checks and stuck-active detection.
 
-The Linux implementation uses the same underlying HITMAN renderer concepts with Linux-specific process-memory, thread-control and executable-memory handling for Proton. The Linux files remain available separately in the repository and are not bundled into the Windows release ZIP.
+The Linux version is now distributed as a single executable Python file, `Linux-HitmanVRFoveationFix.py`, with version details kept inside the script.
 
-Linux-specific fail-closed hardening includes `PTRACE_O_EXITKILL` on suspended game threads, strict `SIGTRAP` and RIP validation for injected remote syscalls, wrapper ownership/balance checks, and stuck-active detection.
-
-Development and testing of the Linux port were carried out by **GREYBE4RD**, with assistance from ChatGPT, on Arch Linux / SwayWM / Wayland, SteamVR and an AMD Radeon RX 9070 XT. While the port should be largely distro and hardware-agnostic, behaviour on other distributions, desktop environments, hardware configurations and VR setups may vary.
+Development and testing were carried out by **GREYBE4RD**, with assistance from ChatGPT, on Arch Linux / SwayWM / Wayland, SteamVR and an AMD Radeon RX 9070 XT. Other configurations may vary.
 
 **To run it:**
 
-1. Download the `.sh` and `.py` files to the same directory.
-2. Make the launcher executable and run it:
-
 ```bash
-chmod +x launch.linux.HitmanVRFoveationFix-v1.6.sh
-./launch.linux.HitmanVRFoveationFix-v1.6.sh
+chmod +x Linux-HitmanVRFoveationFix.py
+./Linux-HitmanVRFoveationFix.py
 ```
 
-3. Enter the `sudo` password when prompted.
-4. Start HITMAN, and leave the terminal open while playing. Press `Ctrl+C` to stop the tool and restore live changes when safe.
+The script requests `sudo` automatically when needed. Leave the terminal open while playing. Press `Ctrl+C` to stop the tool and restore live changes when safe.
 
 ## What the Windows fix changes
 

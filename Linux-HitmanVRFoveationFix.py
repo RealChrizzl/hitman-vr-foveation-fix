@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # Linux port developed with assistance from ChatGPT.
 """
-HitmanVRFoveationFix v1.6.0 - Linux/Proton port
+HitmanVRFoveationFix v1.6.2 - Linux/Proton port
 
-Based on RealChrizzl's Windows/PowerShell v1.6 implementation.
+Based on RealChrizzl's Windows/PowerShell v1.6.1 implementation.
+
+Linux v1.6.2 keeps the Windows v1.6.1 renderer behaviour unchanged and adds
+Linux-specific simplified launch and packaging improvements: the Python file
+is now directly executable, self-elevates through sudo when needed, keeps the
+logfile owned by the invoking user, and carries the v1.6.1 unknown-build scan
+optimisations.
 
 v1.6 removes the save/reload mask race at its source:
   - Two renderer-code patches make HITMAN generate zero foveation-mask values
@@ -47,8 +53,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-FIX_VERSION = "1.6.0"
-UPSTREAM_VERSION = "1.6"
+FIX_VERSION = "1.6.2"
+UPSTREAM_VERSION = "1.6.1"
 
 # ===========================================================================
 # VERIFIED PATH - HITMAN build 3.270.1
@@ -836,6 +842,15 @@ class HitmanFix:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode):
                     raise OSError("log is not regular file")
+
+                # Keep the log owned by the normal user even though the tool
+                # self-elevates through sudo for process-memory access.
+                sudo_uid = os.environ.get("SUDO_UID")
+                sudo_gid = os.environ.get("SUDO_GID")
+                if sudo_uid is not None and sudo_gid is not None:
+                    os.fchown(fd, int(sudo_uid), int(sudo_gid))
+                os.fchmod(fd, 0o600)
+
                 line = f"{dt.datetime.now():%Y-%m-%d %H:%M:%S}  [v{FIX_VERSION}] {text}\n"
                 os.write(fd, line.encode())
             finally:
@@ -898,19 +913,34 @@ class HitmanFix:
 
     @staticmethod
     def find_sig(hay: bytes, pattern: str) -> list[int]:
+        """Find at most two matches with the same fail-closed semantics.
+
+        Windows v1.6.1 moved the expensive interpreted signature scan into
+        compiled code. Python's bytes.find() provides the equivalent fast anchor
+        search here; wildcard comparison and uniqueness requirements are unchanged.
+        """
         vals = [-1 if x == "??" else int(x, 16) for x in pattern.split()]
         anchor = next((i for i, x in enumerate(vals) if x >= 0), None)
         if anchor is None:
             return []
-        hits = []
+        hits: list[int] = []
         n = len(vals)
-        for p in range(len(hay) - n + 1):
-            if hay[p + anchor] != vals[anchor]:
-                continue
+        limit = len(hay) - n
+        if limit < 0:
+            return hits
+        anchor_byte = bytes((vals[anchor],))
+        search_from = anchor
+        search_end = limit + anchor + 1
+        while True:
+            found = hay.find(anchor_byte, search_from, search_end)
+            if found < 0:
+                break
+            p = found - anchor
             if all(v < 0 or hay[p + i] == v for i, v in enumerate(vals)):
                 hits.append(p)
                 if len(hits) > 1:
                     break
+            search_from = found + 1
         return hits
 
     # ----- process discovery ------------------------------------------------
@@ -981,7 +1011,6 @@ class HitmanFix:
         except Exception:
             return False
 
-        digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
         sites: list[Site] = []
         guards: list[Site] = []
         hooks: list[HookDesc] = []
@@ -990,6 +1019,13 @@ class HitmanFix:
         wno = VERIFIED_WNO_OFF
 
         if stamp == VERIFIED_TIMESTAMP:
+            # Only the verified build uses the executable hash. Unknown builds
+            # are validated entirely by unique signatures, matching Windows v1.6.1.
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
+            except OSError:
+                self.fatal = "Could not verify the game executable."
+                return False
             if digest != VERIFIED_SHA256:
                 self.fatal = "This executable has the verified build number but different code. Nothing was changed."
                 return False
@@ -1004,6 +1040,11 @@ class HitmanFix:
             hooks = list(HOOK_DESCS_VERIFIED)
         else:
             mode = "scanned"
+            self.status(
+                "Scanning this HITMAN build",
+                "This is not the verified build; locating code by signature. Please wait before starting VR.",
+            )
+            scan_started = time.monotonic()
             for hit, fix, pattern, what in SIGS:
                 matches = self.find_sig(text, pattern)
                 if len(matches) != 1:
@@ -1049,6 +1090,12 @@ class HitmanFix:
             if not 0 < wno <= 0x4000:
                 self.fatal = "Implausible device layout."
                 return False
+
+            scan_ms = int((time.monotonic() - scan_started) * 1000)
+            self.log(
+                f"signature scan finished in {scan_ms} ms over {len(text)} bytes of .text, "
+                f"{len(SIGS)} base + {len(HOOK_SIGS)} refraction + 1 device pattern"
+            )
 
         try:
             mem_fd = os.open(f"/proc/{pid}/mem", os.O_RDWR)
@@ -1731,14 +1778,25 @@ class HitmanFix:
         self.stopped = True
 
 
+def ensure_root() -> None:
+    """Re-exec this script through sudo when launched as a normal user."""
+    if os.geteuid() == 0:
+        return
+    script = str(Path(__file__).resolve())
+    try:
+        os.execvp("sudo", ["sudo", sys.executable, "-I", script, *sys.argv[1:]])
+    except OSError as exc:
+        raise SystemExit(f"Could not elevate through sudo: {exc}") from exc
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=f"Linux/Proton port of HitmanVRFoveationFix v{UPSTREAM_VERSION}")
+    ensure_root()
+
+    parser = argparse.ArgumentParser(
+        description=f"HitmanVRFoveationFix Linux v{FIX_VERSION}, based on Windows/PowerShell v{UPSTREAM_VERSION}"
+    )
     parser.add_argument("--process-name", default="HITMAN3")
     args = parser.parse_args()
-
-    if os.geteuid() != 0:
-        print(f"Run: sudo python3 -I {Path(__file__).resolve()}", file=sys.stderr)
-        return 2
 
     lock_path = "/run/HitmanVRFoveationFix.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -1770,7 +1828,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, fix.stop)
 
     print(f"HitmanVRFoveationFix v{FIX_VERSION} - Linux/Proton")
-    print("Based on Windows/PowerShell v1.6. Leave this terminal open while you play.")
+    print(f"Based on Windows/PowerShell v{UPSTREAM_VERSION}. Leave this terminal open while you play.")
     print("Press Ctrl+C to turn off and restore.")
     rc = fix.run()
     cleanup()
