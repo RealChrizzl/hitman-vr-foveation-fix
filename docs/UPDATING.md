@@ -49,31 +49,38 @@ Patch `0F 94 C0` to:
 B0 00 90
 ```
 
-### 3. Full-field flag, Oculus — hit offset 44
+### 3 + 4. Full-field flag, Oculus and OpenVR — hit offset 44, exactly two matches
 
 ```text
-C0 08 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28
+?? ?? 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28
 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14
 0F B6 87 1B 03 00 00
 ```
 
-Patch the final `movzx` to:
+Patch the final `movzx` at **both** matches to:
 
 ```text
 B8 01 00 00 00 90 90
 ```
 
+The game contains two near-identical copies of this method, one per VR backend
+(vtable slot 65 of `ZRenderVRDeviceOculus` and `ZRenderVRDeviceOpenVR`). They
+differ only in the first four bytes of the pattern, a device field offset:
+ * Oculus: `0x8C0`
+ * OpenVR:
+   * `0x950` in 3.270.1
+   * `0x8E0` in 3.290.1
+
+Earlier versions used two exact patterns, and the four bytes change in OpenVR
+broke one of them.
+
+The offset is therefore left as `??`, and this is the one pattern that must
+match **exactly twice** instead of once (`Sites=2` in the script). Both matches
+get the same patch, so the scanner does not need to know which is Oculus and
+which is OpenVR; the four offset bytes are only written to the log as a label.
+Any other number of matches refuses the build.
+
 The long prefix matters: the short tail has a near-twin elsewhere.
-
-### 4. Full-field flag, OpenVR — hit offset 44
-
-```text
-50 09 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28
-48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14
-0F B6 87 1B 03 00 00
-```
-
-Same patch as Oculus. Both backends must be covered.
 
 ### 5. Logical view count A — hit offset 12
 
