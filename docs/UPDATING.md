@@ -2,15 +2,36 @@
 
 The Windows tool has two ways of finding the code it needs.
 
-**On build 3.270.1** it uses fixed RVAs and instruction contexts that were verified by
-hand.
+**On builds 3.270.1 and 3.290.1** Windows v1.6.2 uses a matching verified profile:
+an executable timestamp and SHA-256 fingerprint, fixed RVAs, stock bytes and full
+instruction contexts for the eight base sites and three refraction hooks. The
+3.270.1 profile is preserved.
 
 **On any other build** it searches the `.text` section for conservative byte patterns.
 Addresses move when IO Interactive rebuilds the game; surrounding instruction shapes
-often survive. If every required site can still be found uniquely and consistently, the
+often survive. If every required site can still be found with its exact expected match
+count and consistently with the other sites, the
 tool can run in scanned mode. If not, it refuses to write.
 
 This document is for whoever has to update those signatures after a future build.
+
+## Verified 3.290.1 profile
+
+| Fingerprint | Value |
+|---|---|
+| PE timestamp | `1792593790` |
+| SHA-256 | `0A337C7979A48B1C2D2E4CF7E80A63BF634C527B6BD301DFE46DB8BB7F977B52` |
+| `.text` size | `28,682,240` bytes |
+
+The script is the source of truth for each profile's addresses and exact contexts.
+Offline validation checked all required patch sites, hook calls and contexts against
+the executable. The live startup fallback scan took 645 ms over the `.text` section;
+this is a measurement, not a startup-time guarantee.
+
+Both Oculus and SteamVR were tested successfully on 3.290.1. The supplied log also
+shows balanced CopyA/CopyB telemetry and a normal game exit. The Linux v1.6.2 port
+is unchanged, remains based on Windows v1.6.1 and has not been tested for this new
+Windows profile.
 
 ---
 
@@ -71,14 +92,16 @@ differ only in the first four bytes of the pattern, a device field offset:
    * `0x950` in 3.270.1
    * `0x8E0` in 3.290.1
 
-Earlier versions used two exact patterns, and the four bytes change in OpenVR
-broke one of them.
+Earlier versions used two exact patterns; the OpenVR field-offset change broke one
+of them. The combined signature comes from zlondrej's
+[PR #23](https://github.com/RealChrizzl/hitman-vr-foveation-fix/pull/23).
 
-The offset is therefore left as `??`, and this is the one pattern that must
+The low two displacement bytes are therefore left as `??`, and this is the one pattern that must
 match **exactly twice** instead of once (`Sites=2` in the script). Both matches
 get the same patch, so the scanner does not need to know which is Oculus and
 which is OpenVR; the four offset bytes are only written to the log as a label.
-Any other number of matches refuses the build.
+Any other number of matches refuses the build. The matcher searches until it finds
+more than the expected count, so a third match cannot be silently ignored.
 
 The long prefix matters: the short tail has a near-twin elsewhere.
 
@@ -263,6 +286,9 @@ There is no substitute for an HMD test. At minimum verify:
 7. **Restore** — close the tool while HITMAN is live and verify that it restores only
    owned code when the wrappers are quiescent; unsafe states must fail closed.
 
-If an unknown build scanner match is being changed, also verify uniqueness of every
-base signature, both mask hit offsets, both Copy target decodes and every stock guard
-context before shipping it.
+If an unknown-build scanner match is being changed, also verify the exact expected
+count of every base signature (two for the combined full-FOV pattern, one for each
+other entry), both mask hit offsets, both Copy target decodes and every stock guard
+context before shipping it. To add a verified profile, record its timestamp and full
+SHA-256, derive its RVAs and complete instruction contexts from that executable, and
+validate the profile independently of the fallback scan before shipping it.

@@ -1,7 +1,9 @@
 # How it works
 
-Everything below refers to HITMAN 3 / World of Assassination build **3.270.1**,
-Windows, D3D11. Both VR backends the game has are covered: Oculus (LibOVR) and
+The address examples below refer to HITMAN 3 / World of Assassination build
+**3.270.1**, Windows, D3D11. Windows v1.6.2 also has a verified **3.290.1** profile
+with its own addresses and full instruction contexts; the renderer changes are the
+same. Both VR backends the game has are covered: Oculus (LibOVR) and
 SteamVR (OpenVR). HITMAN has no native OpenXR backend.
 
 ---
@@ -205,7 +207,7 @@ apply.
 
 The eight base patches and the v1.4 refraction hook are installed as an ownership-aware
 transaction. Expected stock bytes are checked before writing, patched bytes are read
-back, and unknown builds must pass unique pattern matching first.
+back, and unknown builds must pass exact expected pattern-match counts first.
 
 The refraction wrappers live in private executable memory allocated inside HITMAN. For
 installation and live removal, game threads are suspended and their instruction
@@ -222,7 +224,18 @@ The code cave is not freed while HITMAN remains alive.
 
 ## 7. Unknown-build matching
 
-Build 3.270.1 uses fixed verified RVAs. Other builds use patterns and fail closed.
+Windows v1.6.2 selects a verified profile for builds 3.270.1 and 3.290.1 using the
+PE timestamp and full executable SHA-256. Each profile supplies fixed RVAs, stock
+bytes and full instruction contexts for all eight base sites and three hooks. Other
+builds use patterns and fail closed on an unexpected match count or inconsistent
+targets. See [UPDATING.md](UPDATING.md) for the 3.290.1 fingerprint.
+
+The combined full-FOV signature requires exactly two matches, one for each backend.
+Its first two bytes are wildcarded because the OpenVR field displacement changed
+from `0x950` in 3.270.1 to `0x8E0` in 3.290.1; both matches still require the same
+full instruction sequence and receive the same seven-byte patch at offset 44.
+The matcher detects a third match and refuses the build. This compatibility fix
+comes from zlondrej's [PR #23](https://github.com/RealChrizzl/hitman-vr-foveation-fix/pull/23).
 
 The v1.6 mask scanner uses a 66-byte context for both source instructions. It extends
 past both stores and through the later XMM reloads; the same unique match yields hit

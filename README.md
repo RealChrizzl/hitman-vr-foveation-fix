@@ -6,13 +6,23 @@ HITMAN's PC VR renderer uses fixed foveation: a small high-resolution area in th
 
 HitmanVRFoveationFix changes the renderer to use two full-resolution eye layers across the full field of view while preserving the four logical views HITMAN still expects for geometry and visibility.
 
-## What's new in v1.6.1
+## What's new in Windows v1.6.2
+
+Windows v1.6.2 adds verified support for HITMAN **3.290.1**, alongside the existing **3.270.1** profile. Each profile uses its own executable fingerprint, exact addresses and instruction contexts for all eight base patches and three refraction hooks.
+
+The fallback full-field-of-view signature now covers both Oculus and OpenVR with exactly two required matches. This fixes the OpenVR field-offset change from `0x950` to `0x8E0` in 3.290.1. Thanks to **zlondrej** for [PR #23](https://github.com/RealChrizzl/hitman-vr-foveation-fix/pull/23).
+
+The 3.290.1 fix was tested successfully with both Oculus and SteamVR. Supplied telemetry shows balanced CopyA/CopyB changes and restores, followed by a normal game exit. Offline validation checked every required site against the executable. The live startup scan of its 28,682,240-byte `.text` section took 645 ms.
+
+Renderer behavior and runtime safety checks remain unchanged. The experimental Linux v1.6.2 port still derives from Windows v1.6.1; the new Windows 3.290.1 support has not been tested on Linux.
+
+### Previous Windows v1.6.1 changes
 
 Windows v1.6.1 keeps the v1.6 renderer fixes unchanged and makes startup on unverified HITMAN builds dramatically faster.
 
 - **Unknown-build signature scanning is now compiled.** The conservative fallback matcher no longer walks tens of megabytes byte-by-byte in PowerShell. On the Issue #15 reporter's unverified build, the full 28,325,888-byte `.text` scan dropped from roughly 12 seconds to 343–366 ms, and 3/3 tests succeeded even when YES-to-VR was pressed as quickly as possible.
-- **Unknown builds skip an unnecessary full-executable hash.** SHA-256 verification is still performed for the verified 3.270.1 fixed-address path; scanned builds no longer pay for a hash that was not used to trust them.
-- **Safety rules are unchanged.** Every required pattern must still resolve uniquely, refraction targets are still cross-checked, and unknown builds still fail closed on ambiguity or if VR is already active.
+- **Unknown builds skip an unnecessary full-executable hash.** SHA-256 verification is still performed for verified fixed-address profiles; scanned builds no longer pay for a hash that was not used to trust them.
+- **Safety rules are unchanged.** Every required pattern must resolve to its exact expected number of sites, refraction targets are cross-checked, and unknown builds fail closed on ambiguity or if VR is already active.
 - **Clearer startup status.** Unverified builds show `Scanning this HITMAN build` while signatures are located and write the scan duration to `foveationfix.log`.
 
 The underlying v1.6 renderer changes remain unchanged:
@@ -28,12 +38,12 @@ The v1.5 second view-count fix and the v1.4 transparency/refraction fix are pres
 
 | Platform | Status |
 |---|---|
-| Windows / Oculus (LibOVR) | v1.6.1, supported |
-| Windows / SteamVR (OpenVR) | v1.6.1, supported |
+| Windows / Oculus (LibOVR) | v1.6.2, supported |
+| Windows / SteamVR (OpenVR) | v1.6.2, supported |
 | Linux / Proton / SteamVR | Experimental v1.6.2 port (based on Windows v1.6.1) |
 | Standalone Quest | Not supported |
 
-The Windows implementation is verified against HITMAN World of Assassination build **3.270.1**. Other builds use conservative byte-pattern matching and fail closed if the required code cannot be located uniquely.
+The Windows implementation has verified profiles for HITMAN World of Assassination builds **3.270.1** and **3.290.1**. Other builds use conservative byte-pattern matching and fail closed if the required code cannot be located with exactly the expected match counts.
 
 The v1.6 renderer changes were tested locally with Oculus Link, Air Link and SteamVR, including repeated mission/save reloads. The original v1.5 save/reload black-circle reproducer was also retested externally on the verified SteamVR/OpenVR build with repeated reloads and did not reproduce on v1.6. For v1.6.1, the Issue #15 reporter validated the optimized unknown-build path in three fast YES-to-VR runs; all three succeeded, with measured scan times of 343 ms and 366 ms in the supplied logs.
 
@@ -129,8 +139,8 @@ The tool does **not** modify HITMAN files or settings. All changes are made in t
 The Windows implementation is deliberately fail-closed:
 
 - expected code must match before it is patched;
-- the verified build uses fixed, hand-checked instruction contexts;
-- unknown builds must match every required byte pattern uniquely and consistently;
+- verified builds use fingerprinted profiles with fixed instruction contexts;
+- unknown builds must match every required byte pattern consistently and with its exact expected match count;
 - all code writes are read back and verified;
 - the VR device geometry block is checked for plausibility before the tool accepts renderer state as initialized;
 - the two mask fields are read-only diagnostics in v1.6: any readable non-zero mask after initialization is treated as a failure rather than silently repaired;
@@ -148,10 +158,11 @@ The repository contains additional material for maintenance and reverse engineer
 - [`docs/HOW-IT-WORKS.md`](https://github.com/RealChrizzl/hitman-vr-foveation-fix/blob/main/docs/HOW-IT-WORKS.md) — renderer architecture and patch rationale
 - [`docs/UPDATING.md`](https://github.com/RealChrizzl/hitman-vr-foveation-fix/blob/main/docs/UPDATING.md) — signatures and update procedure
 - [`tools/HitmanVRProbe.ps1`](https://github.com/RealChrizzl/hitman-vr-foveation-fix/blob/main/tools/HitmanVRProbe.ps1) — read-only diagnostic probe
+- [`CHANGELOG-v1.6.2.md`](CHANGELOG-v1.6.2.md) — Windows 3.290.1 support and validation
 - [`CHANGELOG-v1.6.1.md`](CHANGELOG-v1.6.1.md) — v1.6.1 unknown-build startup optimization
 - [`CHANGELOG-v1.6.md`](CHANGELOG-v1.6.md) — v1.6 renderer changes
 
-Detailed docs, screenshots, diagnostic tools and Linux-port files are intentionally **not** bundled into the Windows v1.6.1 release ZIP.
+Detailed docs, screenshots, diagnostic tools and Linux-port files are intentionally **not** bundled into the Windows v1.6.2 release ZIP.
 
 ## Reporting problems
 

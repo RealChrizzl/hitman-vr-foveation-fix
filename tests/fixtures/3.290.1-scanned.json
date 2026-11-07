@@ -1,0 +1,88 @@
+{
+  "Passed": true,
+  "Commit": "04a8746a1e4be2f05df0ad3b6c9145f415896d3f",
+  "GameVersion": "3.290.1.0",
+  "ExeSHA256": "0A337C7979A48B1C2D2E4CF7E80A63BF634C527B6BD301DFE46DB8BB7F977B52",
+  "BaseSites": [
+    {
+      "Name": "two layers instead of four (writer A)",
+      "RVA": "0x1205C0E",
+      "Prefix": "8B 97 D8 04",
+      "Stock": "0F 94 C1",
+      "Replacement": "B1 00 90"
+    },
+    {
+      "Name": "two layers instead of four (writer B)",
+      "RVA": "0x1205C31",
+      "Prefix": "8B 97 D8 04",
+      "Stock": "0F 94 C0",
+      "Replacement": "B0 00 90"
+    },
+    {
+      "Name": "full field of view, Oculus and OpenVR devices",
+      "RVA": "0x127736C",
+      "Prefix": "E0 08 00 00",
+      "Stock": "0F B6 87 1B 03 00 00",
+      "Replacement": "B8 01 00 00 00 90 90"
+    },
+    {
+      "Name": "full field of view, Oculus and OpenVR devices",
+      "RVA": "0x12EFC5C",
+      "Prefix": "C0 08 00 00",
+      "Stock": "0F B6 87 1B 03 00 00",
+      "Replacement": "B8 01 00 00 00 90 90"
+    },
+    {
+      "Name": "view count 4 - without this, geometry disappears",
+      "RVA": "0x118EFC9",
+      "Prefix": "74 16 49 8B",
+      "Stock": "80 B8 1B 03 00 00 00",
+      "Replacement": "48 85 E4 90 90 90 90"
+    },
+    {
+      "Name": "view count 4, second site - without this, one eye keeps an oval mask",
+      "RVA": "0x118FE7C",
+      "Prefix": "49 8B 8D A0",
+      "Stock": "80 B9 1B 03 00 00 00",
+      "Replacement": "48 85 E4 90 90 90 90"
+    },
+    {
+      "Name": "mask b zero at source - the black centre circle",
+      "RVA": "0x11FAB31",
+      "Prefix": "F3 0F 10 41",
+      "Stock": "F3 0F 59 C0",
+      "Replacement": "0F 57 C0 90"
+    },
+    {
+      "Name": "mask a zero at source - the overlay pass",
+      "RVA": "0x11FAB39",
+      "Prefix": "F3 0F 10 41",
+      "Stock": "F3 0F 59 D2",
+      "Replacement": "0F 57 D2 90"
+    }
+  ],
+  "RefractionHooks": [
+    {
+      "Name": "DrawRefractiveAndTransparent camera call",
+      "Kind": "Outer",
+      "RVA": "0x11DE26A",
+      "TargetRVA": "0x12BDE00",
+      "Stock": "48 8B 8C 24 C0 00 00 00 48 89 44 24 20 E8 84 FB 0D 00"
+    },
+    {
+      "Name": "CopyRefractionDepth call A",
+      "Kind": "CopyA",
+      "RVA": "0x12BE782",
+      "TargetRVA": "0x12BDA00",
+      "Stock": "4D 8B C4 8B 41 04 44 8B 09 48 8B CE 89 44 24 20 E8 69 F2 FF FF"
+    },
+    {
+      "Name": "CopyRefractionDepth call B",
+      "Kind": "CopyB",
+      "RVA": "0x12BEF66",
+      "TargetRVA": "0x12BDA00",
+      "Stock": "4D 8B C4 8B 41 04 44 8B 09 48 8B CE 89 44 24 20 E8 85 EA FF FF"
+    }
+  ],
+  "DeviceSlotRVA": "0x32AB520"
+}

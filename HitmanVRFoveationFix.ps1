@@ -1,13 +1,14 @@
 <#
-    HitmanVRFoveationFix v1.6.1
+    HitmanVRFoveationFix v1.6.2
 
-    v1.6.1 is v1.6 with one thing fixed: on a build that is not the verified one,
-    the signature scan was measured at about twelve seconds. That is long enough
-    to reach the VR prompt first, and the tool then correctly refused to patch a
-    session where VR was already running (issue #15). The search now runs in
-    compiled code instead of interpreted PowerShell, and the scanned path no
-    longer hashes the executable it does not need. Nothing about what it matches,
-    or refuses to match, changed. The new duration is logged rather than claimed.
+    v1.6.2 adds a hash-pinned verified profile for HITMAN 3.290.1, alongside
+    the original 3.270.1 profile. Oculus and SteamVR were tested successfully.
+    The OpenVR field offset changed in the game update; PR #23 by zlondrej fixes
+    the fallback pattern while still requiring exactly the two backend copies.
+
+    v1.6.1 moved the unknown-build scan into compiled code and skipped the
+    unnecessary full-executable hash on that fallback path. Those improvements
+    are retained, as are the v1.6 renderer and transaction safety checks.
 
     v1.6 removes the race instead of defending against it.
 
@@ -62,7 +63,7 @@
       2. Start HITMAN - however you like, including straight into VR
       3. Play
 
-    Build 3.270.1 uses exact verified addresses. Other builds keep the
+    Builds 3.270.1 and 3.290.1 use hash-pinned verified addresses. Other builds keep the
     fail-closed pattern path. Nothing is written to disk, ever.
 
     MIT licensed. Made by RealChrizzl.
@@ -73,10 +74,10 @@ param([string]$ProcessName = "HITMAN3")
 
 $ErrorActionPreference = "Stop"
 
-$FIX_VERSION = "1.6.1"
+$FIX_VERSION = "1.6.2"
 $MODE_INFO = [pscustomobject]@{
-    Short="v1.6.1"
-    Title="HitmanVRFoveationFix v1.6.1"
+    Short="v1.6.2"
+    Title="HitmanVRFoveationFix v1.6.2"
     Warning=""
     UsesHook=$true
     HookKinds=@("Outer","CopyA","CopyB")
@@ -109,7 +110,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 if (-not [Environment]::Is64BitProcess) {
     [Windows.Forms.MessageBox]::Show(
-        "HitmanVRFoveationFix v1.6.1 requires 64-bit Windows PowerShell so live code changes can be verified safely.",
+        "HitmanVRFoveationFix v1.6.2 requires 64-bit Windows PowerShell so live code changes can be verified safely.",
         "HitmanVRFoveationFix","OK","Warning") | Out-Null
     exit
 }
@@ -507,6 +508,108 @@ if (@($profileRvas | Sort-Object -Unique).Count -ne $profileRvas.Count) {
 foreach ($site in $VERIFIED_CODE) {
     if ($site.Stock.Length -ne $site.Fix.Length) {
         throw ("Internal v1.4 profile error: unequal patch length at 0x{0:X}." -f $site.RVA) } }
+
+# Each fingerprint owns its addresses and contexts. Keep the original 3.270.1
+# profile intact; selecting a newer game must never leave stale addresses behind.
+$VERIFIED_BUILDS = @{}
+$VERIFIED_BUILDS[$VERIFIED_TIMESTAMP] = [pscustomobject]@{
+    Version="3.270.1"; SHA256=$VERIFIED_SHA256
+    ManagerRVA=$MANAGER_RVA; ManagerVtableRVA=$MANAGER_VTABLE_RVA
+    ManagerDeviceOffset=$MANAGER_DEVICE_OFFSET
+    OculusVtableRVA=$OCULUS_VTABLE_RVA; OpenVRVtableRVA=$OPENVR_VTABLE_RVA
+    WnoOff=$VERIFIED_WNO_OFF
+    Code=@($VERIFIED_CODE); Guards=@($VERIFIED_GUARDS)
+    Contexts=@($VERIFIED_DIAGNOSTIC_CONTEXTS)
+    Hooks=@($COPY_DEPTH_CALL_A,$COPY_DEPTH_CALL_B,$TRANSPARENT_PASS_CALL)
+}
+
+# HITMAN 3.290.1 (Steam build 26301025). Both backends tested on 2026-11-07.
+# The patch payload is identical to PR #23; only the verified addresses are new.
+$VERIFIED_BUILDS[1792593790] = [pscustomobject]@{
+    Version="3.290.1"
+    SHA256="0A337C7979A48B1C2D2E4CF7E80A63BF634C527B6BD301DFE46DB8BB7F977B52"
+    ManagerRVA=0x03297380L; ManagerVtableRVA=0x01F52EF8L
+    ManagerDeviceOffset=0x141A0L
+    OculusVtableRVA=0x01F5F258L; OpenVRVtableRVA=0x01F5BBB8L
+    WnoOff=0x31BL
+    Code=@(
+      [pscustomobject]@{ Name="two layers instead of four (writer A)"; RVA=0x1205C0EL
+        Stock=[byte[]](0x0F,0x94,0xC1)
+        Fix=[byte[]](0xB1,0x00,0x90) }
+      [pscustomobject]@{ Name="two layers instead of four (writer B)"; RVA=0x1205C31L
+        Stock=[byte[]](0x0F,0x94,0xC0)
+        Fix=[byte[]](0xB0,0x00,0x90) }
+      [pscustomobject]@{ Name="full field of view, Oculus and OpenVR devices"; RVA=0x127736CL
+        Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00)
+        Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
+      [pscustomobject]@{ Name="full field of view, Oculus and OpenVR devices"; RVA=0x12EFC5CL
+        Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00)
+        Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
+      [pscustomobject]@{ Name="view count 4 - without this, geometry disappears"; RVA=0x118EFC9L
+        Stock=[byte[]](0x80,0xB8,0x1B,0x03,0x00,0x00,0x00)
+        Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90) }
+      [pscustomobject]@{ Name="view count 4, second site - without this, one eye keeps an oval mask"; RVA=0x118FE7CL
+        Stock=[byte[]](0x80,0xB9,0x1B,0x03,0x00,0x00,0x00)
+        Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90) }
+      [pscustomobject]@{ Name="mask b zero at source - the black centre circle"; RVA=0x11FAB31L
+        Stock=[byte[]](0xF3,0x0F,0x59,0xC0)
+        Fix=[byte[]](0x0F,0x57,0xC0,0x90) }
+      [pscustomobject]@{ Name="mask a zero at source - the overlay pass"; RVA=0x11FAB39L
+        Stock=[byte[]](0xF3,0x0F,0x59,0xD2)
+        Fix=[byte[]](0x0F,0x57,0xD2,0x90) }
+    )
+    Guards=@()
+    Contexts=@(
+      [pscustomobject]@{ RVA=0x0118EFBDL
+        Bytes=[byte[]](0x74,0x16,0x49,0x8B,0x85,0xA0,0x41,0x01,0x00,0x41,0x8B,0xCF,0x80,0xB8,0x1B,0x03,0x00,0x00,0x00,0x0F,0x45,0xCF) }
+      [pscustomobject]@{ RVA=0x0118FE73L
+        Bytes=[byte[]](0x49,0x8B,0x8D,0xA0,0x41,0x01,0x00,0x74,0x1A,0x80,0xB9,0x1B,0x03,0x00,0x00,0x00,0xBF,0x02,0x00,0x00) }
+      [pscustomobject]@{ RVA=0x011D9F59L
+        Bytes=[byte[]](0x48,0x8B,0x0D,0xC0,0x15,0x0D,0x02,0x8B,0xD6,0x48,0x8B,0x01,0x44,0x38,0xB9,0x1B,0x03,0x00,0x00,0x0F,0x84) }
+      [pscustomobject]@{ RVA=0x011DE26AL
+        Bytes=[byte[]](0x48,0x8B,0x8C,0x24,0xC0,0x00,0x00,0x00,0x48,0x89,0x44,0x24,0x20,0xE8,0x84,0xFB,0x0D,0x00,0x48,0x8D,0x8C,0x24,0x60,0x02,0x00,0x00) }
+      [pscustomobject]@{ RVA=0x011FAB23L
+        Bytes=[byte[]](0xF3,0x0F,0x10,0x41,0x30,0xF3,0x0F,0x5E,0x41,0x18,0xF3,0x0F,0x5E,0xD1,0xF3,0x0F,0x59,0xC0,0x41,0x0F,0x28,0xC8,0xF3,0x0F,0x59,0xD2,0xF3,0x0F,0x11,0x81,0xB4,0x00,0x00,0x00,0xF3,0x0F,0x10,0x41,0x44,0xF3,0x0F,0x58,0xC0,0xF3,0x0F,0x11,0x91,0xB0,0x00,0x00,0x00,0x0F,0x11,0x99,0x80,0x00,0x00,0x00,0x41,0x0F,0x28,0xD8,0x41,0x0F,0x28,0xD0) }
+      [pscustomobject]@{ RVA=0x01205C05L
+        Bytes=[byte[]](0x8B,0x97,0xD8,0x04,0x00,0x00,0x83,0xFA,0x01,0x0F,0x94,0xC1,0x88,0x8F,0x1B,0x03,0x00,0x00) }
+      [pscustomobject]@{ RVA=0x01205C28L
+        Bytes=[byte[]](0x8B,0x97,0xD8,0x04,0x00,0x00,0x83,0xFA,0x01,0x0F,0x94,0xC0,0x88,0x87,0x1B,0x03,0x00,0x00) }
+      [pscustomobject]@{ RVA=0x01277340L
+        Bytes=[byte[]](0xE0,0x08,0x00,0x00,0x45,0x33,0xC0,0x4C,0x8B,0x8E,0xC8,0x7A,0x00,0x00,0x48,0x8B,0xD3,0x48,0x89,0x6C,0x24,0x28,0x48,0x89,0x6C,0x24,0x20,0x48,0x8B,0x01,0xFF,0x50,0x28,0x48,0x8B,0xCB,0xE8,0x17,0x5E,0xFD,0xFF,0xFF,0x4B,0x14,0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00) }
+      [pscustomobject]@{ RVA=0x012BDA00L
+        Bytes=[byte[]](0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x6C,0x24,0x18,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0x48,0x81,0xEC,0xA0,0x00,0x00,0x00,0x48,0x8B,0x05,0xE0,0xDA,0xFE,0x01) }
+      [pscustomobject]@{ RVA=0x012BDE00L
+        Bytes=[byte[]](0x4C,0x89,0x4C,0x24,0x20,0x48,0x89,0x4C,0x24,0x08,0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0x48,0x81,0xEC,0xB0,0x01,0x00,0x00,0x48,0x8D,0x6C,0x24,0x60) }
+      [pscustomobject]@{ RVA=0x012BE770L
+        Bytes=[byte[]](0x48,0x8B,0x8D,0xB0,0x01,0x00,0x00,0x48,0x8D,0x95,0xD0,0x01,0x00,0x00,0x89,0x44,0x24,0x28,0x4D,0x8B,0xC4,0x8B,0x41,0x04,0x44,0x8B,0x09,0x48,0x8B,0xCE,0x89,0x44,0x24,0x20,0xE8,0x69,0xF2,0xFF,0xFF,0x48,0x8B,0x9D,0xD0,0x01,0x00,0x00,0x48,0x8B,0xF8,0x48,0x8B,0x0D,0x58,0xCD,0xFE,0x01,0x4C,0x8D,0x0D,0x71,0xF5,0xC9,0x00) }
+      [pscustomobject]@{ RVA=0x012BEF54L
+        Bytes=[byte[]](0x48,0x8B,0x8D,0xB0,0x01,0x00,0x00,0x48,0x8D,0x95,0xD0,0x01,0x00,0x00,0x89,0x44,0x24,0x28,0x4D,0x8B,0xC4,0x8B,0x41,0x04,0x44,0x8B,0x09,0x48,0x8B,0xCE,0x89,0x44,0x24,0x20,0xE8,0x85,0xEA,0xFF,0xFF,0x48,0x8B,0x9D,0xD0,0x01,0x00,0x00,0x48,0x8B,0xF8,0x48,0x8B,0x85,0xB0,0x01,0x00,0x00,0x4C,0x8B,0x40,0x60,0x4D,0x85,0xC0) }
+      [pscustomobject]@{ RVA=0x012EFC30L
+        Bytes=[byte[]](0xC0,0x08,0x00,0x00,0x45,0x33,0xC0,0x4C,0x8B,0x8E,0xC8,0x7A,0x00,0x00,0x48,0x8B,0xD3,0x48,0x89,0x6C,0x24,0x28,0x48,0x89,0x6C,0x24,0x20,0x48,0x8B,0x01,0xFF,0x50,0x28,0x48,0x8B,0xCB,0xE8,0x27,0xD5,0xF5,0xFF,0xFF,0x4B,0x14,0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00) }
+    )
+    Hooks=@(
+      [pscustomobject]@{ Name="CopyRefractionDepth call A"; Kind="CopyA"
+        RVA=0x012BE782L; TargetRVA=0x12BDA00L; ContinuationRVA=0x012BE797L
+        UnitOffset=0x400L; CounterOffset=0x60L
+        Stock=[byte[]](0x4D,0x8B,0xC4,0x8B,0x41,0x04,0x44,0x8B,0x09,0x48,0x8B,0xCE,0x89,0x44,0x24,0x20,0xE8,0x69,0xF2,0xFF,0xFF) }
+      [pscustomobject]@{ Name="CopyRefractionDepth call B"; Kind="CopyB"
+        RVA=0x012BEF66L; TargetRVA=0x12BDA00L; ContinuationRVA=0x012BEF7BL
+        UnitOffset=0x600L; CounterOffset=0x80L
+        Stock=[byte[]](0x4D,0x8B,0xC4,0x8B,0x41,0x04,0x44,0x8B,0x09,0x48,0x8B,0xCE,0x89,0x44,0x24,0x20,0xE8,0x85,0xEA,0xFF,0xFF) }
+      [pscustomobject]@{ Name="DrawRefractiveAndTransparent camera call"; Kind="Outer"
+        RVA=0x011DE26AL; TargetRVA=0x12BDE00L; ContinuationRVA=0x011DE27CL
+        UnitOffset=0x0L; CounterOffset=0x0L
+        Stock=[byte[]](0x48,0x8B,0x8C,0x24,0xC0,0x00,0x00,0x00,0x48,0x89,0x44,0x24,0x20,0xE8,0x84,0xFB,0x0D,0x00) }
+    )
+}
+foreach ($build in $VERIFIED_BUILDS.Values) {
+    $owned=@($build.Code)+@($build.Guards)+@($build.Hooks)
+    if (@($owned | ForEach-Object { [Int64]$_.RVA } | Sort-Object -Unique).Count -ne $owned.Count) {
+        throw "Internal verified profile error: duplicate code/guard RVA." }
+    foreach ($site in $build.Code) {
+        if ($site.Stock.Length -ne $site.Fix.Length) {
+            throw "Internal verified profile error: unequal patch length." } }
+}
 
 # ===========================================================================
 #  PATTERN PATH - used only when the build is not the verified one
@@ -1039,6 +1142,7 @@ function Find-Sig { param([byte[]]$hay,[string]$pat,[int]$maxHits=1)
 # --- state -----------------------------------------------------------------
 $script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:process=$null; $script:base=0L
 $script:mode=""            # verified | scanned
+$script:verifiedProfile=$null
 $script:sites=@()
 $script:guardSites=@()       # verified-only preconditions; never written/restored
 $script:writtenSites=@()    # only sites this instance owns and may restore
@@ -1089,7 +1193,7 @@ function Detach {
     $script:suspendedHandles=@()
     if ($script:handle -ne [IntPtr]::Zero) { [HmFix]::CloseHandle($script:handle) | Out-Null }
     $script:handle=[IntPtr]::Zero; $script:gamePid=0; $script:process=$null; $script:base=0L
-    $script:mode=""; $script:sites=@(); $script:guardSites=@(); $script:writtenSites=@(); $script:hookDescriptors=@(); $script:hookSites=@()
+    $script:mode=""; $script:verifiedProfile=$null; $script:sites=@(); $script:guardSites=@(); $script:writtenSites=@(); $script:hookDescriptors=@(); $script:hookSites=@()
     $script:hookCave=0L; $script:hookPrepared=$false; $script:lastHookLog=[DateTime]::MinValue
     $script:lastHookIntegrityCheck=[DateTime]::MinValue; $script:hookProgress=@{}
     $script:lastPatchBusyLog=[DateTime]::MinValue
@@ -1134,7 +1238,7 @@ function Changes-MayBeLive {
 
 # --- window ----------------------------------------------------------------
 $form=New-Object Windows.Forms.Form
-$form.Text="HitmanVRFoveationFix v1.6.1"
+$form.Text="HitmanVRFoveationFix v1.6.2"
 $form.ClientSize=New-Object Drawing.Size(520,318)
 $form.FormBorderStyle="FixedSingle"; $form.MaximizeBox=$false
 $form.StartPosition="CenterScreen"
@@ -1182,7 +1286,7 @@ $form.Controls.Add($btnStop)
 
 $link=New-Object Windows.Forms.LinkLabel
 $link.Location=New-Object Drawing.Point(240,260); $link.Size=New-Object Drawing.Size(260,22)
-$link.Text="v1.6.1 - project page"
+$link.Text="v1.6.2 - project page"
 $link.LinkArea=New-Object Windows.Forms.LinkArea(0,6)
 $link.TextAlign="MiddleRight"
 $link.Add_LinkClicked({ Start-Process "https://github.com/RealChrizzl/hitman-vr-foveation-fix" })
@@ -1217,17 +1321,19 @@ function Try-Attach {
     $stamp=$peCheck.Stamp
 
     $sites=@(); $guards=@(); $hooks=@(); $mode=""; $slot=0L; $wno=0x31BL
-    if ($stamp -eq $VERIFIED_TIMESTAMP) {
+    $verifiedProfile=$null
+    if ($VERIFIED_BUILDS.ContainsKey([int]$stamp)) {
+        $verifiedProfile=$VERIFIED_BUILDS[[int]$stamp]
         # The hash only ever gated the verified path, so it is computed there.
         # An unknown build no longer pays for a SHA-256 of the whole executable
         # before a scan it is already waiting on.
         try { $exeHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant() }
         catch { $script:fatal="Could not verify the game executable."; return $false }
-        if ($exeHash -ne $VERIFIED_SHA256) {
+        if ($exeHash -ne $verifiedProfile.SHA256) {
             Log ("refused executable hash {0}" -f $exeHash)
             $script:fatal="This executable has the verified build number but different code. Nothing was changed."
             return $false }
-        foreach ($ctx in $VERIFIED_DIAGNOSTIC_CONTEXTS) {
+        foreach ($ctx in $verifiedProfile.Contexts) {
             $offset=[int64]$ctx.RVA-[int64]$peCheck.TextRVA
             if ($offset -lt 0 -or ($offset+$ctx.Bytes.Length) -gt $peCheck.Text.Length) {
                 $script:fatal="A verified instruction context falls outside the code section. Nothing was changed."
@@ -1240,12 +1346,13 @@ function Try-Attach {
                 return $false } }
 
         $mode="verified"
-        foreach ($c in $VERIFIED_CODE) {
+        foreach ($c in $verifiedProfile.Code) {
             $sites += [pscustomobject]@{ Name=$c.Name; RVA=$c.RVA; Stock=$c.Stock; Fix=$c.Fix } }
-        foreach ($g in $VERIFIED_GUARDS) {
+        foreach ($g in $verifiedProfile.Guards) {
             $guards += [pscustomobject]@{ Name=$g.Name; RVA=$g.RVA; Stock=$g.Stock } }
-        $hooks=@($COPY_DEPTH_CALL_A,$COPY_DEPTH_CALL_B,$TRANSPARENT_PASS_CALL)
-        $wno=$VERIFIED_WNO_OFF
+        $hooks=@($verifiedProfile.Hooks)
+        $wno=$verifiedProfile.WnoOff
+        Log ("verified build {0}, SHA-256 matched" -f $verifiedProfile.Version)
     } else {
         $mode="scanned"
         # This build is not the verified one, so every site has to be located by
@@ -1336,7 +1443,7 @@ function Try-Attach {
             return $false } }
 
     $script:handle=$hnd; $script:gamePid=$p.Id; $script:process=$p; $script:base=$b
-    $script:mode=$mode; $script:sites=$sites; $script:guardSites=$guards; $script:hookDescriptors=$hooks
+    $script:mode=$mode; $script:verifiedProfile=$verifiedProfile; $script:sites=$sites; $script:guardSites=$guards; $script:hookDescriptors=$hooks
     $script:devSlot=$slot; $script:wnoOff=$wno
     Log ("attached pid {0}, build {1}, mode {2}, base sites {3}, guards {4}, v1.4 calls {5}" -f $p.Id,$stamp,$mode,$sites.Count,$guards.Count,$hooks.Count)
     Log ("writes: " + ((@($sites | ForEach-Object { "{0}=0x{1:X}" -f $(if($_.Name){$_.Name}else{"site"}),$_.RVA })) -join ", "))
@@ -1359,13 +1466,15 @@ function Dev-Plausible { param([Int64]$d)
 # returns 0 = no device yet, -1 = wrong backend, otherwise the device address
 function Get-Dev {
     if ($script:mode -eq "verified") {
-        $mgr=$script:base+$MANAGER_RVA
-        if ((I64 $script:handle $mgr) -ne ($script:base+$MANAGER_VTABLE_RVA)) { return 0L }
-        $d=I64 $script:handle ($mgr+$MANAGER_DEVICE_OFFSET)
+        $profile=$script:verifiedProfile
+        if ($null -eq $profile) { return -1L }
+        $mgr=$script:base+$profile.ManagerRVA
+        if ((I64 $script:handle $mgr) -ne ($script:base+$profile.ManagerVtableRVA)) { return 0L }
+        $d=I64 $script:handle ($mgr+$profile.ManagerDeviceOffset)
         if ($d -eq 0) { return 0L }
         $vt = I64 $script:handle $d
-        if ($vt -ne ($script:base+$OCULUS_VTABLE_RVA) -and
-            $vt -ne ($script:base+$OPENVR_VTABLE_RVA)) { return -1L }
+        if ($vt -ne ($script:base+$script:verifiedProfile.OculusVtableRVA) -and
+            $vt -ne ($script:base+$script:verifiedProfile.OpenVRVtableRVA)) { return -1L }
         return $d
     }
     try { $d = I64 $script:handle ($script:base+$script:devSlot) } catch { return 0L }
@@ -1715,7 +1824,7 @@ function Apply-Code {
             if ($suspendedVrState -eq 1) { throw "VR became active before the suspended patch transaction" }
             throw "the renderer state became uncertain before the suspended patch transaction" }
         if ($script:mode -eq "verified") {
-            foreach ($ctx in $VERIFIED_DIAGNOSTIC_CONTEXTS) {
+            foreach ($ctx in $script:verifiedProfile.Contexts) {
                 if (-not (Same (RB $script:handle ($script:base+$ctx.RVA) $ctx.Bytes.Length) $ctx.Bytes)) {
                     throw ("a loaded verified code context changed at RVA 0x{0:X}" -f $ctx.RVA) } } }
         foreach ($g in $script:guardSites) {
@@ -1786,7 +1895,7 @@ function Apply-Code {
         return $false }
     $script:writtenSites=$written
     $script:patched=$true
-    Log ("v1.6.1 code patched, base sites {0}, refraction calls {1}" -f $written.Count,$hookWritten.Count)
+    Log ("v1.6.2 code patched, base sites {0}, refraction calls {1}" -f $written.Count,$hookWritten.Count)
     return $true }
 
 # Restore every code block owned by this instance while HITMAN is still live.
@@ -1896,7 +2005,7 @@ $timer.Add_Tick({
             $gameClosed=(-not (Game-IsAlive))
             if ($gameClosed) {
                 Log "game closed"; Detach; $script:fatal=""
-                Show-State "grey" "Waiting for HITMAN" "The game was closed. Start it again and v1.6.1 will apply automatically."
+                Show-State "grey" "Waiting for HITMAN" "The game was closed. Start it again and v1.6.2 will apply automatically."
                 $btnStop.Enabled=$false; return } }
 
         if ($script:suspendedHandles.Count -gt 0) {
@@ -1923,7 +2032,7 @@ $timer.Add_Tick({
         $warn=""
         if ($script:mode -eq "scanned") {
             $warn="Untested build - every code pattern was unique, but please check the image carefully." }
-        $ready="v1.6.1 is patched. Put on your headset, start VR as usual, then load a mission."
+        $ready="v1.6.2 is patched. Put on your headset, start VR as usual, then load a mission."
 
         if (-not $script:patched) {
             if (-not (Apply-Code)) { return }
@@ -1953,8 +2062,8 @@ $timer.Add_Tick({
             $backend="unknown"
             try {
                 $vt=I64 $script:handle $d
-                if ($vt -eq ($script:base+$OCULUS_VTABLE_RVA)) { $backend="Oculus" }
-                elseif ($vt -eq ($script:base+$OPENVR_VTABLE_RVA)) { $backend="SteamVR/OpenVR" } }
+                if ($null -ne $script:verifiedProfile -and $vt -eq ($script:base+$script:verifiedProfile.OculusVtableRVA)) { $backend="Oculus" }
+                elseif ($null -ne $script:verifiedProfile -and $vt -eq ($script:base+$script:verifiedProfile.OpenVRVtableRVA)) { $backend="SteamVR/OpenVR" } }
             catch {}
             Log ("VR device found at 0x{0:X}, backend {1}" -f $d,$backend) }
 
@@ -2045,7 +2154,7 @@ $btnStop.Add_Click({
     Detach
     $script:stopped=$true; $script:fatal=""
     $btnStop.Enabled=$false
-    Show-State "grey" "Turned off" "Everything owned by v1.6.1 was restored. Close and reopen this tool to use the fix again." })
+    Show-State "grey" "Turned off" "Everything owned by v1.6.2 was restored. Close and reopen this tool to use the fix again." })
 
 $form.Add_FormClosing({ param($sender,$eventArgs)
     if ($script:unsafeCodeState -and (Game-IsAlive)) {
