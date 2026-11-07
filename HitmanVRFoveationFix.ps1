@@ -518,12 +518,15 @@ $SIGS = @(
   [pscustomobject]@{ Hit=9;  Fix=[byte[]](0xB0,0x00,0x90)
     Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C0 88 87 1B 03 00 00"
     What="two layers instead of four (writer B)" }
+  # The Oculus and OpenVR devices each have a copy of this method (vtable slot
+  # 65). The copies differ only in the device field read at the start of the
+  # pattern: Oculus 0x8C0; OpenVR 0x950 in 3.270.1, 0x8E0 in 3.290.1.
+  # With that field wildcarded, one pattern must match exactly the two copies.
+  # Both get the same patch, so which hit is which does not matter.
   [pscustomobject]@{ Hit=44; Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90)
-    Pattern="C0 08 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"
-    What="full field of view, Oculus device" }
-  [pscustomobject]@{ Hit=44; Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90)
-    Pattern="50 09 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"
-    What="full field of view, OpenVR device" }
+    Pattern="?? ?? 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"
+    Sites=2
+    What="full field of view, Oculus and OpenVR devices" }
   [pscustomobject]@{ Hit=12; Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90)
     Pattern="74 16 49 8B 85 A0 41 01 00 41 8B CF 80 B8 1B 03 00 00 00 0F 45 CF"
     What="view count 4 - without this, geometry disappears" }
@@ -1019,7 +1022,7 @@ function Read-PE { param([string]$path)
 # moved into HmFix.FindPattern. maxHits=1 reproduces the old early exit exactly:
 # the loop stopped as soon as a second match was found, because every caller
 # treats "not exactly one" as a refusal.
-function Find-Sig { param([byte[]]$hay,[string]$pat)
+function Find-Sig { param([byte[]]$hay,[string]$pat,[int]$maxHits=1)
     $tok=$pat.Split(" "); $n=$tok.Count
     $val=New-Object int[] $n
     for ($i=0;$i -lt $n;$i++) {
@@ -1029,7 +1032,7 @@ function Find-Sig { param([byte[]]$hay,[string]$pat)
     # "exactly one match" test would pass for zero and for two matches alike.
     # Returning the array plainly lets PowerShell enumerate it, so the callers
     # see 0, 1 or 2 offsets as they always did.
-    [int[]]$hits = [HmFix]::FindPattern($hay,$val,1)
+    [int[]]$hits = [HmFix]::FindPattern($hay,$val,$maxHits)
     if ($null -eq $hits) { return @() }
     return $hits }
 
@@ -1254,13 +1257,22 @@ function Try-Attach {
         $scanClock=[Diagnostics.Stopwatch]::StartNew()
 
         foreach ($sig in $SIGS) {
-            $hits=@(Find-Sig $peCheck.Text $sig.Pattern)
-            if ($hits.Count -ne 1) {
-                $script:fatal="The code for '" + $sig.What + "' could not be located uniquely in this build. Nothing was changed."
+            # Most patterns must match exactly once. A pattern with Sites=N must
+            # match exactly N times; searching up to N+1 hits proves there is no
+            # extra one.
+            $expected=if ($sig.PSObject.Properties["Sites"]) { [int]$sig.Sites } else { 1 }
+            $hits=@(Find-Sig $peCheck.Text $sig.Pattern $expected)
+            if ($hits.Count -ne $expected) {
+                $script:fatal="The code for '" + $sig.What + "' could not be located unambiguously in this build. Nothing was changed."
                 return $false }
-            $stock=New-Object byte[] $sig.Fix.Length
-            [Array]::Copy($peCheck.Text,$hits[0]+$sig.Hit,$stock,0,$stock.Length)
-            $sites += [pscustomobject]@{ Name=$sig.What; RVA=[int64]($peCheck.TextRVA+$hits[0]+$sig.Hit); Stock=$stock; Fix=$sig.Fix } }
+            foreach ($hit in $hits) {
+                $name=$sig.What
+                if ($expected -gt 1) {
+                    # Label only, for the log: the bytes at the start of the match.
+                    $name += " ({0})" -f (($peCheck.Text[$hit..($hit+3)] | ForEach-Object { $_.ToString("X2") }) -join " ") }
+                $stock=New-Object byte[] $sig.Fix.Length
+                [Array]::Copy($peCheck.Text,$hit+$sig.Hit,$stock,0,$stock.Length)
+                $sites += [pscustomobject]@{ Name=$name; RVA=[int64]($peCheck.TextRVA+$hit+$sig.Hit); Stock=$stock; Fix=$sig.Fix } } }
 
         foreach ($sig in $HOOK_SIGS) {
             $hits=@(Find-Sig $peCheck.Text $sig.Pattern)
@@ -1302,8 +1314,8 @@ function Try-Attach {
             return $false }
 
         $scanClock.Stop()
-        Log ("signature scan finished in {0} ms over {1} bytes of .text, {2} base + {3} refraction + 1 device pattern" -f `
-            [int]$scanClock.ElapsedMilliseconds,$peCheck.Text.Length,$SIGS.Count,$HOOK_SIGS.Count)
+        Log ("signature scan finished in {0} ms over {1} bytes of .text, {2} base ({3} sites) + {4} refraction + 1 device pattern" -f `
+            [int]$scanClock.ElapsedMilliseconds,$peCheck.Text.Length,$SIGS.Count,$sites.Count,$HOOK_SIGS.Count)
     }
 
     $hnd=[HmFix]::OpenProcess(0x1F0FFF,$false,$p.Id)
