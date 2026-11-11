@@ -1,5 +1,5 @@
 <#
-    HitmanVRProbe  v1.1
+    HitmanVRProbe  v1.2
     Read-only diagnostic for HitmanVRFoveationFix.
 
     WHAT THIS IS FOR
@@ -69,13 +69,15 @@ public static class HmProbe {
 # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ  - no write access requested
 $ACCESS = 0x0410
 
-$VERIFIED_TIMESTAMP = 1781013974
+$VERIFIED_BUILDS = @(
+    @{ Version="3.270.1"; Timestamp=1781013974; SHA256="B4FB04F460FD67E67F21264D7AD0D64BC081FBA62EC71E36B898D04DB9E8620D" }
+    @{ Version="3.290.1"; Timestamp=1792593790; SHA256="0A337C7979A48B1C2D2E4CF7E80A63BF634C527B6BD301DFE46DB8BB7F977B52" }
+)
 
 $SIGS = [ordered]@{
   "layer writer A"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C1 88 8F 1B 03 00 00"; Hit=9; Stock=[byte[]](0x0F,0x94,0xC1); Fix=[byte[]](0xB1,0x00,0x90) }
   "layer writer B"   = @{ Pattern="8B 97 D8 04 00 00 83 FA 01 0F 94 C0 88 87 1B 03 00 00"; Hit=9; Stock=[byte[]](0x0F,0x94,0xC0); Fix=[byte[]](0xB0,0x00,0x90) }
-  "field of view A"  = @{ Pattern="C0 08 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44; Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00); Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
-  "field of view B"  = @{ Pattern="50 09 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44; Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00); Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
+  "field of view"    = @{ Pattern="?? ?? 00 00 45 33 C0 4C 8B 8E C8 7A 00 00 48 8B D3 48 89 6C 24 28 48 89 6C 24 20 48 8B 01 FF 50 28 48 8B CB E8 ?? ?? ?? ?? FF 4B 14 0F B6 87 1B 03 00 00"; Hit=44; Sites=2; Stock=[byte[]](0x0F,0xB6,0x87,0x1B,0x03,0x00,0x00); Fix=[byte[]](0xB8,0x01,0x00,0x00,0x00,0x90,0x90) }
   "view count"       = @{ Pattern="74 16 49 8B 85 A0 41 01 00 41 8B CF 80 B8 1B 03 00 00 00 0F 45 CF"; Hit=12; Stock=[byte[]](0x80,0xB8,0x1B,0x03,0x00,0x00,0x00); Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90) }
   "view count B"     = @{ Pattern="49 8B 8D A0 41 01 00 74 1A 80 B9 1B 03 00 00 00 BF 02 00 00"; Hit=9; Stock=[byte[]](0x80,0xB9,0x1B,0x03,0x00,0x00,0x00); Fix=[byte[]](0x48,0x85,0xE4,0x90,0x90,0x90,0x90) }
   "device locator"   = @{ Pattern="48 8B 0D ?? ?? ?? ?? 8B D6 48 8B 01 44 38 B9 1B 03 00 00 0F 84"; Hit=0 }
@@ -124,7 +126,7 @@ function Find-Sig { param([byte[]]$hay,[string]$pat)
 
 function Build-Report {
     $L = New-Object Collections.Generic.List[string]
-    $L.Add("HitmanVRProbe 1.1 - read-only report")
+    $L.Add("HitmanVRProbe 1.2 - read-only report")
     $L.Add("generated " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
     $L.Add("")
 
@@ -147,7 +149,18 @@ function Build-Report {
             $tSize=[BitConverter]::ToInt32($b,$o+16); $tRVA=[BitConverter]::ToInt32($b,$o+12); $tOff=[BitConverter]::ToInt32($b,$o+20); break } }
     $text=New-Object byte[] $tSize; [Array]::Copy($b,$tOff,$text,0,$tSize)
 
-    $L.Add("game build timestamp : $stamp" + $(if($stamp -eq $VERIFIED_TIMESTAMP){"   (3.270.1, the verified build)"}else{"   (NOT the verified build)"}))
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { $hash=[BitConverter]::ToString($sha.ComputeHash($b)).Replace("-","") }
+    finally { $sha.Dispose() }
+    $build=@($VERIFIED_BUILDS | Where-Object { $_.Timestamp -eq $stamp })
+    $identity=if ($build.Count -eq 1 -and $hash -eq $build[0].SHA256) {
+        $build[0].Version + " (verified SHA256 and timestamp)"
+    } elseif ($build.Count -eq 1) {
+        $build[0].Version + " timestamp, SHA256 MISMATCH - unverified file"
+    } else { "unrecognized fingerprint - unverified file" }
+    $L.Add("game build timestamp : $stamp")
+    $L.Add("file SHA256          : $hash")
+    $L.Add("build identity       : $identity")
     $L.Add("file                 : " + (Split-Path -Leaf $path))
     $L.Add("")
 
@@ -162,18 +175,23 @@ function Build-Report {
     $devRVA=0L; $wnoOff=0L; $patchSites=@()
     foreach ($k in $SIGS.Keys) {
         $h=@(Find-Sig $text $SIGS[$k].Pattern)
-        if ($h.Count -eq 1) {
-            $rva=$tRVA+$h[0]+$SIGS[$k].Hit
-            $L.Add(("{0,-16} : found, 1 hit, RVA 0x{1:X7}" -f $k,$rva))
-            if ($null -ne $SIGS[$k].Fix) {
-                $patchSites += [pscustomobject]@{ Name=$k; RVA=[int64]$rva; Stock=$SIGS[$k].Stock; Fix=$SIGS[$k].Fix } }
-            if ($k -eq "device locator") {
-                $rel=[BitConverter]::ToInt32($text,$h[0]+3)
-                $devRVA=[int64]($tRVA+$h[0]+7+$rel)
-                $wnoOff=[int64][BitConverter]::ToUInt32($text,$h[0]+15)
-                $L.Add(("{0,-16}   -> device pointer at RVA 0x{1:X7}, foveation flag at +0x{2:X}" -f "",$devRVA,$wnoOff)) }
+        $expected=if ($SIGS[$k].ContainsKey("Sites")) { [int]$SIGS[$k].Sites } else { 1 }
+        if ($h.Count -eq $expected) {
+            for ($site=0;$site -lt $h.Count;$site++) {
+                $at=$h[$site]
+                $rva=$tRVA+$at+$SIGS[$k].Hit
+                $name=if ($expected -gt 1) { "$k " + ($site+1) } else { $k }
+                $L.Add(("{0,-16} : found, {1}/{2} hits, RVA 0x{3:X7}" -f $name,$h.Count,$expected,$rva))
+                if ($null -ne $SIGS[$k].Fix) {
+                    $patchSites += [pscustomobject]@{ Name=$name; RVA=[int64]$rva; Stock=$SIGS[$k].Stock; Fix=$SIGS[$k].Fix } }
+                if ($k -eq "device locator") {
+                    $rel=[BitConverter]::ToInt32($text,$at+3)
+                    $devRVA=[int64]($tRVA+$at+7+$rel)
+                    $wnoOff=[int64][BitConverter]::ToUInt32($text,$at+15)
+                    $L.Add(("{0,-16}   -> device pointer at RVA 0x{1:X7}, foveation flag at +0x{2:X}" -f "",$devRVA,$wnoOff)) }
+            }
         } else {
-            $L.Add(("{0,-16} : NOT FOUND ({1} hits)" -f $k,$h.Count)) } }
+            $L.Add(("{0,-16} : NOT FOUND or ambiguous ({1} hits; expected {2})" -f $k,$h.Count,$expected)) } }
     $L.Add("")
 
     # live device
