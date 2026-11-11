@@ -70,7 +70,10 @@
 #>
 
 [CmdletBinding()]
-param([string]$ProcessName = "HITMAN3")
+param([string]$ProcessName = "HITMAN3",
+      # Started together with the game (scheduled task / Steam launch option):
+      # start minimized, stay silent if already running, close with HITMAN.
+      [switch]$ExitWithGame)
 
 $ErrorActionPreference = "Stop"
 
@@ -93,10 +96,11 @@ $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $self = $PSCommandPath
     if (-not $self) { $self = $MyInvocation.MyCommand.Definition }
+    $launchArguments=@("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden",
+                "-File","`"$self`"","-ProcessName","`"$ProcessName`"")
+    if ($ExitWithGame) { $launchArguments += "-ExitWithGame" }
     try {
-        Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @(
-            "-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden",
-            "-File","`"$self`"","-ProcessName","`"$ProcessName`"")
+        Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $launchArguments
     } catch {
         Add-Type -AssemblyName System.Windows.Forms
         [Windows.Forms.MessageBox]::Show(
@@ -123,6 +127,8 @@ $script:mutexOwned=$false
 try { $script:mutexOwned=$script:instanceMutex.WaitOne(0,$false) }
 catch [Threading.AbandonedMutexException] { $script:mutexOwned=$true }
 if (-not $script:mutexOwned) {
+    # Auto-start on every game launch must not nag when the tool is already open.
+    if ($ExitWithGame) { $script:instanceMutex.Dispose(); exit }
     [Windows.Forms.MessageBox]::Show(
         "HitmanVRFoveationFix is already running in this Windows session.",
         "HitmanVRFoveationFix","OK","Information") | Out-Null
@@ -1164,6 +1170,11 @@ $script:runtimeLoaded=$false; $script:lastRuntimeCheck=0L
 $script:lastUi=""
 $script:fatal=""; $script:stopped=$false
 $script:lastAttachScan=0L
+# -ExitWithGame gives up if HITMAN never appears, so a cancelled launch does
+# not leave the tool waiting in the background forever.
+$AUTO_GIVE_UP_SECONDS=600
+$script:everAttached=$false
+$script:startedTs=[Diagnostics.Stopwatch]::GetTimestamp()
 
 
 
@@ -1242,6 +1253,9 @@ $form.Text="HitmanVRFoveationFix v1.6.2"
 $form.ClientSize=New-Object Drawing.Size(520,318)
 $form.FormBorderStyle="FixedSingle"; $form.MaximizeBox=$false
 $form.StartPosition="CenterScreen"
+# Launched with the game: do not pop up over it. The status is still in the
+# taskbar title (see Show-State).
+if ($ExitWithGame) { $form.WindowState="Minimized" }
 $form.Font=New-Object Drawing.Font("Segoe UI",9)
 
 $title=New-Object Windows.Forms.Label
@@ -1301,7 +1315,8 @@ function Show-State { param($colour,$head,$body,$warn="")
         "amber" { [Drawing.Color]::FromArgb(220,140,0) }
         "red"   { [Drawing.Color]::Firebrick }
         default { [Drawing.Color]::Gray } }
-    $state.Text=$head; $detail.Text=$body; $note.Text=$warn }
+    $state.Text=$head; $detail.Text=$body; $note.Text=$warn
+    $form.Text="HitmanVRFoveationFix v1.6.1 - $head" }
 
 Show-State "grey" "Waiting for HITMAN" "Start HITMAN after this tool. It will apply the fix before VR starts."
 
@@ -2002,11 +2017,18 @@ $timer.Add_Tick({
         if ($script:stopped) { return }
 
         if ($script:handle -ne [IntPtr]::Zero) {
+            $script:everAttached=$true
             $gameClosed=(-not (Game-IsAlive))
             if ($gameClosed) {
                 Log "game closed"; Detach; $script:fatal=""
+                if ($ExitWithGame) { Log "closing with the game (-ExitWithGame)"; $form.Close(); return }
                 Show-State "grey" "Waiting for HITMAN" "The game was closed. Start it again and v1.6.2 will apply automatically."
                 $btnStop.Enabled=$false; return } }
+
+        if ($ExitWithGame -and -not $script:everAttached -and $script:handle -eq [IntPtr]::Zero -and
+            (([Diagnostics.Stopwatch]::GetTimestamp()-$script:startedTs)/[Diagnostics.Stopwatch]::Frequency) -gt $AUTO_GIVE_UP_SECONDS) {
+            Log "HITMAN did not start within $AUTO_GIVE_UP_SECONDS s of an automatic start; closing"
+            $form.Close(); return }
 
         if ($script:suspendedHandles.Count -gt 0) {
             if ($script:unsafeCodeState) {

@@ -74,6 +74,59 @@ Status colours:
 
 The tool writes `foveationfix.log` next to the script. If you report a problem, attach that log.
 
+### Optional: start automatically with the game (Steam)
+
+The fix can start whenever you launch HITMAN from Steam. It then starts minimized, shows its status in the taskbar title, and closes when the game closes. If HITMAN does not start within 10 minutes, the fix closes.
+
+There are two ways to set this up. Both use the same Steam launch option; they differ only in whether you confirm an administrator prompt on every launch.
+
+#### With a UAC prompt on every launch
+
+Nothing is installed, and the fix gets administrator rights only when you confirm the prompt.
+
+1. Keep `HitmanVRFoveationFix-Steam.bat` in the same folder as `HitmanVRFoveationFix.ps1`.
+2. In Steam, right-click HITMAN World of Assassination → **Properties** → **General** → **Launch Options**, and enter:
+
+   ```
+   "<fix folder>\HitmanVRFoveationFix-Steam.bat" %command%
+   ```
+
+   Replace `<fix folder>` with the full path of the folder you extracted the fix into, on any drive. Keep the quotes, and avoid `%`, `&`, `^` or `"` in the folder path.
+
+3. Accept the UAC prompt each time you start the game.
+
+The log is written next to the script, as with a manual start. To undo this, clear the launch option.
+
+#### Without a prompt (scheduled task)
+
+Administrator rights are granted once, during setup.
+
+1. Keep all files in one folder, including `HitmanVRFoveationFix-AutoStart.bat`, `HitmanVRFoveationFix-AutoStart.ps1` and `HitmanVRFoveationFix-Steam.bat`.
+2. Double-click **`HitmanVRFoveationFix-AutoStart.bat`** once and accept the administrator prompt. This registers a scheduled task named `HitmanVRFoveationFix` and copies the Steam launch option to your clipboard.
+3. Paste the launch option into Steam, as in the previous section.
+
+A task that grants administrator rights without a prompt is only safe if everything it runs is protected from changes by normal programs. The setup therefore copies the script to `%ProgramFiles%\HitmanVRFoveationFix`, where only administrators can write, and runs that copy. The task also removes these user-controlled inputs before PowerShell starts:
+
+- the per-user `cmd` AutoRun command;
+- .NET profiler and AppDomain-manager environment variables (`COR_*`, `APPDOMAIN_MANAGER_*`);
+- PowerShell modules in your Documents folder;
+- your user `%TEMP%` folder, which `Add-Type` would otherwise compile into.
+
+This closes the known ways to abuse the task itself.
+
+- The fix's log is written to `%ProgramFiles%\HitmanVRFoveationFix`.
+- **Run the setup again after updating the fix**, or the task keeps running the old copy.
+- Running the setup again also lets you remove the task. After removing it, clear the launch option too, or switch to the UAC prompt option by leaving it in place.
+
+#### What neither option protects against
+
+Malware already running under your account can edit `HitmanVRFoveationFix.ps1` in your download folder and wait for it to be run with administrator rights. A UAC prompt does not help here: it always shows Windows PowerShell from Microsoft, whatever the script contains.
+
+- With the **UAC prompt** option, and with the normal manual start, the script in your folder runs with administrator rights every time you accept the prompt.
+- With the **scheduled task**, the task runs the protected copy in Program Files. The download-folder copy only matters when you run the setup, which copies it.
+
+Only run the fix or its setup from a folder you trust, and download updates from the original repository or a fork you trust. The scripts are plain text, so you can review them before running.
+
 ### Why PowerShell instead of an EXE?
 
 The tool must read and write another process's memory. Packed PowerShell executables frequently trigger antivirus heuristics because the same techniques are also used by malware. The project therefore ships as a plain-text PowerShell script that can be inspected directly.
